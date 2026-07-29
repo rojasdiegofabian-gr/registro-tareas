@@ -24,7 +24,7 @@ from fpdf import FPDF
 # ─────────────────────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-DB_HOST = "db.hfuafmdpvfginosodqxc.supabase.co"
+DB_HOST = "aws-1-us-west-2.pooler.supabase.com"
 DB_PORT = "5432"
 DB_NAME = "postgres"
 DB_USER = "postgres.hfuafmdpvfginosodqxc"
