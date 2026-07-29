@@ -22,15 +22,25 @@ from fpdf import FPDF
 # ─────────────────────────────────────────────────
 # Base de datos (PostgreSQL via Supabase)
 # ─────────────────────────────────────────────────
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://postgres.hfuafmdpvfginosodqxc:Registo2026@aws-1-us-west-2.pooler.supabase.com:6543/postgres?sslmode=require"
-)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+DB_HOST = "aws-1-us-west-2.pooler.supabase.com"
+DB_PORT = "6543"
+DB_NAME = "postgres"
+DB_USER = "postgres.hfuafmdpvfginosodqxc"
+DB_PASS = "Registo2026"
 
 
 @contextmanager
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    else:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+            user=DB_USER, password=DB_PASS,
+            sslmode="require", cursor_factory=RealDictCursor
+        )
     try:
         yield conn
         conn.commit()
