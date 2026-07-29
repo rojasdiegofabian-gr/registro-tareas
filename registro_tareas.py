@@ -1224,10 +1224,10 @@ def panel_admin():
 
             if len(seleccion) >= 2:
                 ids = [nombres[n] for n in seleccion]
-                placeholders = ",".join("%s" * len(ids))
+                placeholders = ",".join(["%s"] * len(ids))
 
                 with get_db() as db:
-                    df_c = pd.read_sql_query(f"""
+                    query = f"""
                         SELECT u.nombre as colaborador, r.fecha, t.nombre as tarea, SUM(r.cantidad) as cantidad
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
@@ -1235,7 +1235,8 @@ def panel_admin():
                         WHERE r.usuario_id IN ({placeholders}) AND r.fecha BETWEEN %s AND %s
                         GROUP BY u.nombre, r.fecha, t.nombre
                         ORDER BY r.fecha
-                    """, db, params=(*ids, cd.isoformat(), ch.isoformat()))
+                    """
+                    df_c = pd.read_sql_query(query, db, params=(*ids, cd.isoformat(), ch.isoformat()))
 
                 if df_c.empty:
                     st.info("Sin datos para comparar en este período.")
@@ -1647,8 +1648,11 @@ def panel_admin():
                         log_audit(db, user["id"], "alta_usuario", f"Nuevo usuario: {nuevo_nombre}")
                     st.success(f"✓ '{nuevo_nombre}' creado.")
                     st.rerun()
-                except psycopg2.errors.UniqueViolation:
-                    st.error("Ese nombre de usuario ya existe.")
+                except Exception as e:
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        st.error("Ese nombre de usuario ya existe.")
+                    else:
+                        st.error(f"Error: {e}")
 
         st.markdown("#### Colaboradores actuales")
         with get_db() as db:
@@ -1696,8 +1700,11 @@ def panel_admin():
                         log_audit(db, user["id"], "alta_tarea", nombre_tarea)
                     st.success(f"✓ Tarea '{nombre_tarea}' creada.")
                     st.rerun()
-                except psycopg2.errors.UniqueViolation:
-                    st.error("Esa tarea ya existe.")
+                except Exception as e:
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        st.error("Esa tarea ya existe.")
+                    else:
+                        st.error(f"Error: {e}")
 
         st.markdown("#### Tareas actuales")
         with get_db() as db:
