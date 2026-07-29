@@ -6,7 +6,8 @@ Ejecutar con:  streamlit run registro_tareas.py
 """
 
 import streamlit as st
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import hashlib
 import os
 import io
@@ -19,147 +20,149 @@ import plotly.graph_objects as go
 from fpdf import FPDF
 
 # ─────────────────────────────────────────────────
-# Base de datos
+# Base de datos (PostgreSQL via Supabase)
 # ─────────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registro.db")
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres.hfuafmdpvfginosodqxc:[Gerenciar2535]@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
+)
 
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
+def db_execute(conn, query, params=None):
+    """Helper: ejecuta query y retorna cursor."""
+    cur = conn.cursor()
+    cur.execute(query, params or ())
+    return cur
+
+
 def init_db():
     with get_db() as db:
-        db.executescript("""
+        cur = db.cursor()
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 nombre TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 rol TEXT NOT NULL DEFAULT 'usuario',
                 activo INTEGER NOT NULL DEFAULT 1,
-                creado_en TEXT DEFAULT (datetime('now','localtime'))
+                creado_en TIMESTAMP DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS tareas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 nombre TEXT UNIQUE NOT NULL,
                 activa INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS registros (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
                 fecha TEXT NOT NULL,
                 turno TEXT NOT NULL DEFAULT 'Mañana',
-                tarea_id INTEGER NOT NULL,
+                tarea_id INTEGER NOT NULL REFERENCES tareas(id),
                 cantidad INTEGER NOT NULL,
                 observacion TEXT DEFAULT '',
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                actualizado_en TEXT DEFAULT (datetime('now','localtime')),
-                FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
-                FOREIGN KEY (tarea_id) REFERENCES tareas(id)
+                creado_en TIMESTAMP DEFAULT NOW(),
+                actualizado_en TIMESTAMP DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS metas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tarea_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                tarea_id INTEGER NOT NULL REFERENCES tareas(id),
                 cantidad_objetivo INTEGER NOT NULL,
-                periodo TEXT NOT NULL DEFAULT 'diario',
-                FOREIGN KEY (tarea_id) REFERENCES tareas(id)
+                periodo TEXT NOT NULL DEFAULT 'diario'
             );
             CREATE TABLE IF NOT EXISTS configuracion (
                 clave TEXT PRIMARY KEY,
                 valor TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 usuario_id INTEGER,
                 accion TEXT NOT NULL,
                 detalle TEXT DEFAULT '',
-                fecha_hora TEXT DEFAULT (datetime('now','localtime'))
+                fecha_hora TIMESTAMP DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS asignaciones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
                 descripcion TEXT NOT NULL,
                 fecha_limite TEXT,
                 prioridad TEXT NOT NULL DEFAULT 'normal',
                 estado TEXT NOT NULL DEFAULT 'pendiente',
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                completado_en TEXT,
-                FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                creado_en TIMESTAMP DEFAULT NOW(),
+                completado_en TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS evaluaciones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
                 fecha TEXT NOT NULL,
                 categoria TEXT NOT NULL,
                 puntaje INTEGER NOT NULL DEFAULT 3,
                 observacion TEXT DEFAULT '',
-                registrado_por INTEGER NOT NULL,
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
-                FOREIGN KEY (registrado_por) REFERENCES usuarios(id)
+                registrado_por INTEGER NOT NULL REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS flujos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 nombre TEXT NOT NULL,
                 descripcion TEXT DEFAULT '',
                 estado TEXT NOT NULL DEFAULT 'en_curso',
-                creado_por INTEGER NOT NULL,
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                completado_en TEXT,
-                FOREIGN KEY (creado_por) REFERENCES usuarios(id)
+                creado_por INTEGER NOT NULL REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW(),
+                completado_en TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS flujo_pasos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                flujo_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                flujo_id INTEGER NOT NULL REFERENCES flujos(id),
                 numero_paso INTEGER NOT NULL,
-                usuario_id INTEGER NOT NULL,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
                 descripcion TEXT NOT NULL,
                 estado TEXT NOT NULL DEFAULT 'bloqueado',
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                completado_en TEXT,
-                FOREIGN KEY (flujo_id) REFERENCES flujos(id),
-                FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                creado_en TIMESTAMP DEFAULT NOW(),
+                completado_en TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS avisos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 titulo TEXT NOT NULL,
                 mensaje TEXT NOT NULL,
                 prioridad TEXT NOT NULL DEFAULT 'normal',
                 activo INTEGER NOT NULL DEFAULT 1,
-                creado_por INTEGER NOT NULL,
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                FOREIGN KEY (creado_por) REFERENCES usuarios(id)
+                creado_por INTEGER NOT NULL REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW()
             );
             CREATE TABLE IF NOT EXISTS mensajes_dia (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
                 fecha TEXT NOT NULL,
                 mensaje TEXT NOT NULL,
-                creado_en TEXT DEFAULT (datetime('now','localtime')),
-                FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                creado_en TIMESTAMP DEFAULT NOW()
             );
         """)
-        # Config por defecto: días editables
-        cur = db.execute("SELECT valor FROM configuracion WHERE clave='dias_editables'")
+        db.commit()
+        # Config por defecto
+        cur.execute("SELECT valor FROM configuracion WHERE clave='dias_editables'")
         if not cur.fetchone():
-            db.execute("INSERT INTO configuracion (clave, valor) VALUES ('dias_editables', '0')")
-        cur = db.execute("SELECT valor FROM configuracion WHERE clave='dias_dashboard'")
+            cur.execute("INSERT INTO configuracion (clave, valor) VALUES ('dias_editables', '0')")
+        cur.execute("SELECT valor FROM configuracion WHERE clave='dias_dashboard'")
         if not cur.fetchone():
-            db.execute("INSERT INTO configuracion (clave, valor) VALUES ('dias_dashboard', '14')")
+            cur.execute("INSERT INTO configuracion (clave, valor) VALUES ('dias_dashboard', '14')")
         # Admin por defecto
-        cur = db.execute("SELECT id FROM usuarios WHERE rol='admin'")
+        cur.execute("SELECT id FROM usuarios WHERE rol='admin'")
         if not cur.fetchone():
             h = hashlib.sha256("admin123".encode()).hexdigest()
-            db.execute("INSERT INTO usuarios (nombre, password_hash, rol) VALUES (?, ?, 'admin')", ("admin", h))
+            cur.execute("INSERT INTO usuarios (nombre, password_hash, rol) VALUES (%s, %s, 'admin')", ("admin", h))
+        db.commit()
 
 
 def hash_pw(pw):
@@ -167,7 +170,7 @@ def hash_pw(pw):
 
 
 def log_audit(db, usuario_id, accion, detalle=""):
-    db.execute("INSERT INTO audit_log (usuario_id, accion, detalle) VALUES (?, ?, ?)",
+    db_execute(db, "INSERT INTO audit_log (usuario_id, accion, detalle) VALUES (%s, %s, %s)",
                (usuario_id, accion, detalle))
 
 
@@ -179,6 +182,19 @@ def pdf_safe(text):
         text = text.replace(old, new)
     # Eliminar emojis y caracteres fuera de latin-1
     return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def fmt_ts(val):
+    """Formatea timestamp de PostgreSQL a string legible."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val[:16]
+    try:
+        return val.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(val)[:16]
+
 
 
 # ─────────────────────────────────────────────────
@@ -373,8 +389,8 @@ def pantalla_login():
                 st.error("Completá ambos campos.")
                 return
             with get_db() as db:
-                row = db.execute(
-                    "SELECT id, nombre, password_hash, rol, activo FROM usuarios WHERE nombre = ?",
+                row = db_execute(db, 
+                    "SELECT id, nombre, password_hash, rol, activo FROM usuarios WHERE nombre = %s",
                     (usuario,)
                 ).fetchone()
             if not row:
@@ -395,13 +411,13 @@ def pantalla_login():
 # ─────────────────────────────────────────────────
 def obtener_tareas_activas():
     with get_db() as db:
-        rows = db.execute("SELECT id, nombre FROM tareas WHERE activa=1 ORDER BY nombre").fetchall()
+        rows = db_execute(db, "SELECT id, nombre FROM tareas WHERE activa=1 ORDER BY nombre").fetchall()
     return {r["nombre"]: r["id"] for r in rows}
 
 
 def obtener_config(clave):
     with get_db() as db:
-        row = db.execute("SELECT valor FROM configuracion WHERE clave=?", (clave,)).fetchone()
+        row = db_execute(db, "SELECT valor FROM configuracion WHERE clave=%s", (clave,)).fetchone()
     return row["valor"] if row else None
 
 
@@ -423,7 +439,7 @@ def panel_usuario():
 
     # ── Avisos activos ──
     with get_db() as db:
-        avisos = db.execute("""
+        avisos = db_execute(db, """
             SELECT titulo, mensaje, prioridad, creado_en FROM avisos
             WHERE activo = 1 ORDER BY creado_en DESC LIMIT 5
         """).fetchall()
@@ -438,13 +454,13 @@ def panel_usuario():
 
     # ── Tareas asignadas pendientes ──
     with get_db() as db:
-        cant_pendientes = db.execute(
-            "SELECT COUNT(*) as c FROM asignaciones WHERE usuario_id=? AND estado='pendiente'",
+        cant_pendientes = db_execute(db, 
+            "SELECT COUNT(*) as c FROM asignaciones WHERE usuario_id=%s AND estado='pendiente'",
             (user["id"],)).fetchone()["c"]
-        cant_flujos = db.execute("""
+        cant_flujos = db_execute(db, """
             SELECT COUNT(*) as c FROM flujo_pasos fp
             JOIN flujos f ON fp.flujo_id = f.id
-            WHERE fp.usuario_id=? AND fp.estado='pendiente' AND f.estado='en_curso'
+            WHERE fp.usuario_id=%s AND fp.estado='pendiente' AND f.estado='en_curso'
         """, (user["id"],)).fetchone()["c"]
     if cant_pendientes > 0 or cant_flujos > 0:
         total_pend = cant_pendientes + cant_flujos
@@ -484,8 +500,8 @@ def panel_usuario():
         if enviado:
             tarea_id = tareas[tarea_sel]
             with get_db() as db:
-                db.execute(
-                    "INSERT INTO registros (usuario_id, fecha, turno, tarea_id, cantidad, observacion) VALUES (?,?,?,?,?,?)",
+                db_execute(db, 
+                    "INSERT INTO registros (usuario_id, fecha, turno, tarea_id, cantidad, observacion) VALUES (%s,%s,%s,%s,%s,%s)",
                     (user["id"], fecha.isoformat(), turno, tarea_id, cantidad, observacion)
                 )
                 log_audit(db, user["id"], "carga",
@@ -499,7 +515,7 @@ def panel_usuario():
         st.caption("Dejá un comentario sobre cómo fue tu día: problemas, novedades, lo que necesites comunicar.")
 
         with get_db() as db:
-            msg_hoy = db.execute("SELECT id, mensaje FROM mensajes_dia WHERE usuario_id=? AND fecha=?",
+            msg_hoy = db_execute(db, "SELECT id, mensaje FROM mensajes_dia WHERE usuario_id=%s AND fecha=%s",
                                  (user["id"], date.today().isoformat())).fetchone()
 
         msg_actual = msg_hoy["mensaje"] if msg_hoy else ""
@@ -508,9 +524,9 @@ def panel_usuario():
         if st.button("Guardar mensaje", key="btn_msg_dia"):
             with get_db() as db:
                 if msg_hoy:
-                    db.execute("UPDATE mensajes_dia SET mensaje=? WHERE id=?", (nuevo_msg.strip(), msg_hoy["id"]))
+                    db_execute(db, "UPDATE mensajes_dia SET mensaje=%s WHERE id=%s", (nuevo_msg.strip(), msg_hoy["id"]))
                 else:
-                    db.execute("INSERT INTO mensajes_dia (usuario_id, fecha, mensaje) VALUES (?,?,?)",
+                    db_execute(db, "INSERT INTO mensajes_dia (usuario_id, fecha, mensaje) VALUES (%s,%s,%s)",
                                (user["id"], date.today().isoformat(), nuevo_msg.strip()))
                 db.commit()
             st.success("✓ Mensaje guardado")
@@ -523,10 +539,10 @@ def panel_usuario():
         fecha_ver = st.date_input("Ver registros de:", value=date.today(), key="ver_fecha")
 
         with get_db() as db:
-            rows = db.execute("""
+            rows = db_execute(db, """
                 SELECT r.id, r.fecha, r.turno, t.nombre as tarea, r.cantidad, r.observacion, r.creado_en
                 FROM registros r JOIN tareas t ON r.tarea_id = t.id
-                WHERE r.usuario_id = ? AND r.fecha = ?
+                WHERE r.usuario_id = %s AND r.fecha = %s
                 ORDER BY r.creado_en DESC
             """, (user["id"], fecha_ver.isoformat())).fetchall()
 
@@ -537,7 +553,7 @@ def panel_usuario():
             st.metric("Total del día", total)
 
             for r in rows:
-                with st.expander(f"**{r['tarea']}** — Cantidad: {r['cantidad']}  |  Turno: {r['turno']}  |  {r['creado_en'][:16]}"):
+                with st.expander(f"**{r['tarea']}** — Cantidad: {r['cantidad']}  |  Turno: {r['turno']}  |  {fmt_ts(r['creado_en'])}"):
                     if r["observacion"]:
                         st.caption(f"Observación: {r['observacion']}")
 
@@ -558,8 +574,8 @@ def panel_usuario():
 
                         if guardar:
                             with get_db() as db:
-                                db.execute(
-                                    "UPDATE registros SET cantidad=?, observacion=?, actualizado_en=datetime('now','localtime') WHERE id=?",
+                                db_execute(db, 
+                                    "UPDATE registros SET cantidad=%s, observacion=%s, actualizado_en=NOW() WHERE id=%s",
                                     (nueva_cant, nueva_obs, r["id"])
                                 )
                                 log_audit(db, user["id"], "edicion",
@@ -568,7 +584,7 @@ def panel_usuario():
                             st.rerun()
                         if eliminar:
                             with get_db() as db:
-                                db.execute("DELETE FROM registros WHERE id=?", (r["id"],))
+                                db_execute(db, "DELETE FROM registros WHERE id=%s", (r["id"],))
                                 log_audit(db, user["id"], "eliminacion",
                                           f"Registro #{r['id']}: {r['tarea']} x{r['cantidad']}")
                             st.success("Eliminado")
@@ -588,7 +604,7 @@ def panel_usuario():
             df = pd.read_sql_query("""
                 SELECT r.fecha, t.nombre as tarea, r.cantidad, r.turno
                 FROM registros r JOIN tareas t ON r.tarea_id = t.id
-                WHERE r.usuario_id = ? AND r.fecha BETWEEN ? AND ?
+                WHERE r.usuario_id = %s AND r.fecha BETWEEN %s AND %s
                 ORDER BY r.fecha
             """, db, params=(user["id"], est_desde.isoformat(), est_hasta.isoformat()))
 
@@ -622,7 +638,7 @@ def panel_usuario():
 
             # Metas
             with get_db() as db:
-                metas = db.execute("""
+                metas = db_execute(db, """
                     SELECT t.nombre as tarea, m.cantidad_objetivo, m.periodo
                     FROM metas m JOIN tareas t ON m.tarea_id = t.id
                 """).fetchall()
@@ -640,17 +656,17 @@ def panel_usuario():
     # ── Tareas asignadas ──
     with tab_asignadas:
         with get_db() as db:
-            pendientes = db.execute("""
+            pendientes = db_execute(db, """
                 SELECT id, descripcion, fecha_limite, prioridad, estado, creado_en
-                FROM asignaciones WHERE usuario_id=? AND estado='pendiente'
+                FROM asignaciones WHERE usuario_id=%s AND estado='pendiente'
                 ORDER BY
                     CASE prioridad WHEN 'urgente' THEN 1 WHEN 'alta' THEN 2 WHEN 'normal' THEN 3 WHEN 'baja' THEN 4 END,
                     fecha_limite
             """, (user["id"],)).fetchall()
 
-            completadas = db.execute("""
+            completadas = db_execute(db, """
                 SELECT id, descripcion, fecha_limite, prioridad, completado_en
-                FROM asignaciones WHERE usuario_id=? AND estado='completada'
+                FROM asignaciones WHERE usuario_id=%s AND estado='completada'
                 ORDER BY completado_en DESC LIMIT 20
             """, (user["id"],)).fetchall()
 
@@ -662,10 +678,10 @@ def panel_usuario():
                 prioridad_emoji = {"urgente": "🔴", "alta": "🟠", "normal": "🔵", "baja": "⚪"}.get(t["prioridad"], "🔵")
                 fecha_txt = f" · Fecha límite: **{t['fecha_limite']}**" if t["fecha_limite"] else ""
                 with st.expander(f"{prioridad_emoji} {t['descripcion']}{fecha_txt}"):
-                    st.caption(f"Asignada el {t['creado_en'][:16]}  ·  Prioridad: {t['prioridad']}")
+                    st.caption(f"Asignada el {fmt_ts(t['creado_en'])}  ·  Prioridad: {t['prioridad']}")
                     if st.button("✅ Marcar como completada", key=f"comp_{t['id']}"):
                         with get_db() as db:
-                            db.execute("UPDATE asignaciones SET estado='completada', completado_en=datetime('now','localtime') WHERE id=?",
+                            db_execute(db, "UPDATE asignaciones SET estado='completada', completado_en=NOW() WHERE id=%s",
                                        (t["id"],))
                             log_audit(db, user["id"], "tarea_completada", t["descripcion"])
                         st.success("¡Tarea completada!")
@@ -675,19 +691,19 @@ def panel_usuario():
             st.divider()
             st.markdown("#### Completadas recientemente")
             for t in completadas:
-                st.caption(f"✅ ~~{t['descripcion']}~~ — completada el {t['completado_en'][:16]}")
+                st.caption(f"✅ ~~{t['descripcion']}~~ — completada el {fmt_ts(t['completado_en'])}")
 
         # ── Flujos de trabajo del usuario ──
         st.divider()
         st.markdown("#### 🔄 Flujos de trabajo")
 
         with get_db() as db:
-            mis_pasos = db.execute("""
+            mis_pasos = db_execute(db, """
                 SELECT fp.id, fp.numero_paso, fp.descripcion, fp.estado, fp.flujo_id,
                        f.nombre as flujo_nombre, f.descripcion as flujo_desc
                 FROM flujo_pasos fp
                 JOIN flujos f ON fp.flujo_id = f.id
-                WHERE fp.usuario_id = ? AND fp.estado = 'pendiente' AND f.estado = 'en_curso'
+                WHERE fp.usuario_id = %s AND fp.estado = 'pendiente' AND f.estado = 'en_curso'
                 ORDER BY f.creado_en DESC
             """, (user["id"],)).fetchall()
 
@@ -701,32 +717,32 @@ def panel_usuario():
 
                     # Mostrar pasos anteriores completados
                     with get_db() as db:
-                        pasos_ant = db.execute("""
+                        pasos_ant = db_execute(db, """
                             SELECT fp.numero_paso, fp.descripcion, u.nombre as colaborador, fp.completado_en
                             FROM flujo_pasos fp JOIN usuarios u ON fp.usuario_id = u.id
-                            WHERE fp.flujo_id = ? AND fp.numero_paso < ? AND fp.estado = 'completada'
+                            WHERE fp.flujo_id = %s AND fp.numero_paso < %s AND fp.estado = 'completada'
                             ORDER BY fp.numero_paso
                         """, (paso["flujo_id"], paso["numero_paso"])).fetchall()
 
                     if pasos_ant:
                         st.markdown("**Pasos anteriores completados:**")
                         for pa in pasos_ant:
-                            st.caption(f"✅ Paso {pa['numero_paso']}: {pa['descripcion']} ({pa['colaborador']} — {pa['completado_en'][:16]})")
+                            st.caption(f"✅ Paso {pa['numero_paso']}: {pa['descripcion']} ({pa['colaborador']} — {fmt_ts(pa['completado_en'])})")
 
                     if st.button("✅ Marcar mi paso como completado", key=f"fcomp_{paso['id']}"):
                         with get_db() as db:
-                            db.execute("UPDATE flujo_pasos SET estado='completada', completado_en=datetime('now','localtime') WHERE id=?",
+                            db_execute(db, "UPDATE flujo_pasos SET estado='completada', completado_en=NOW() WHERE id=%s",
                                        (paso["id"],))
                             # Desbloquear siguiente paso
-                            siguiente = db.execute("""
+                            siguiente = db_execute(db, """
                                 SELECT id FROM flujo_pasos
-                                WHERE flujo_id = ? AND numero_paso = ?
+                                WHERE flujo_id = %s AND numero_paso = %s
                             """, (paso["flujo_id"], paso["numero_paso"] + 1)).fetchone()
                             if siguiente:
-                                db.execute("UPDATE flujo_pasos SET estado='pendiente' WHERE id=?", (siguiente["id"],))
+                                db_execute(db, "UPDATE flujo_pasos SET estado='pendiente' WHERE id=%s", (siguiente["id"],))
                             else:
                                 # Era el último paso, completar el flujo
-                                db.execute("UPDATE flujos SET estado='completado', completado_en=datetime('now','localtime') WHERE id=?",
+                                db_execute(db, "UPDATE flujos SET estado='completado', completado_en=NOW() WHERE id=%s",
                                            (paso["flujo_id"],))
                             db.commit()
                             log_audit(db, user["id"], "flujo_paso_completado",
@@ -760,24 +776,24 @@ def panel_admin():
 
         with get_db() as db:
             # Quiénes cargaron hoy
-            cargaron = db.execute("""
+            cargaron = db_execute(db, """
                 SELECT DISTINCT u.nombre FROM registros r
                 JOIN usuarios u ON r.usuario_id = u.id
-                WHERE r.fecha = ? AND u.rol = 'usuario' AND u.activo = 1
+                WHERE r.fecha = %s AND u.rol = 'usuario' AND u.activo = 1
             """, (hoy,)).fetchall()
             nombres_cargaron = {r["nombre"] for r in cargaron}
 
-            todos = db.execute("SELECT nombre FROM usuarios WHERE rol='usuario' AND activo=1").fetchall()
+            todos = db_execute(db, "SELECT nombre FROM usuarios WHERE rol='usuario' AND activo=1").fetchall()
             nombres_todos = {r["nombre"] for r in todos}
 
             no_cargaron = nombres_todos - nombres_cargaron
 
-            total_hoy = db.execute(
-                "SELECT COALESCE(SUM(cantidad),0) as t FROM registros WHERE fecha=?", (hoy,)
+            total_hoy = db_execute(db, 
+                "SELECT COALESCE(SUM(cantidad),0) as t FROM registros WHERE fecha=%s", (hoy,)
             ).fetchone()["t"]
 
-            registros_hoy = db.execute(
-                "SELECT COUNT(*) as c FROM registros WHERE fecha=?", (hoy,)
+            registros_hoy = db_execute(db, 
+                "SELECT COUNT(*) as c FROM registros WHERE fecha=%s", (hoy,)
             ).fetchone()["c"]
 
         m1, m2, m3 = st.columns(3)
@@ -795,16 +811,16 @@ def panel_admin():
         # Bajo promedio
         with get_db() as db:
             semana_pasada = (date.today() - timedelta(days=7)).isoformat()
-            promedios = db.execute("""
+            promedios = db_execute(db, """
                 SELECT u.nombre,
                        ROUND(AVG(sub.total_dia), 1) as promedio,
                        COALESCE((SELECT SUM(r2.cantidad) FROM registros r2
-                                 WHERE r2.usuario_id = u.id AND r2.fecha = ?), 0) as hoy
+                                 WHERE r2.usuario_id = u.id AND r2.fecha = %s), 0) as hoy
                 FROM usuarios u
                 JOIN (
                     SELECT usuario_id, fecha, SUM(cantidad) as total_dia
                     FROM registros
-                    WHERE fecha BETWEEN ? AND ?
+                    WHERE fecha BETWEEN %s AND %s
                     GROUP BY usuario_id, fecha
                 ) sub ON sub.usuario_id = u.id
                 WHERE u.rol = 'usuario' AND u.activo = 1
@@ -824,7 +840,7 @@ def panel_admin():
             df_equipo = pd.read_sql_query("""
                 SELECT r.fecha, u.nombre, SUM(r.cantidad) as cantidad
                 FROM registros r JOIN usuarios u ON r.usuario_id = u.id
-                WHERE r.fecha >= ? AND u.activo = 1
+                WHERE r.fecha >= %s AND u.activo = 1
                 GROUP BY r.fecha, u.nombre ORDER BY r.fecha
             """, db, params=(hace14,))
 
@@ -842,10 +858,10 @@ def panel_admin():
         # ── Mensajes del día de los colaboradores ──
         st.markdown("#### 💬 Mensajes del equipo hoy")
         with get_db() as db:
-            mensajes_hoy = db.execute("""
+            mensajes_hoy = db_execute(db, """
                 SELECT u.nombre, m.mensaje FROM mensajes_dia m
                 JOIN usuarios u ON m.usuario_id = u.id
-                WHERE m.fecha = ? ORDER BY m.creado_en DESC
+                WHERE m.fecha = %s ORDER BY m.creado_en DESC
             """, (hoy,)).fetchall()
         if mensajes_hoy:
             for m in mensajes_hoy:
@@ -859,7 +875,7 @@ def panel_admin():
         st.caption("Análisis de las últimas 2 semanas comparadas con las 2 semanas anteriores.")
 
         with get_db() as db:
-            colabs_tend = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs_tend = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if not colabs_tend:
             st.info("No hay colaboradores cargados.")
@@ -874,22 +890,22 @@ def panel_admin():
 
             for c in colabs_tend:
                 with get_db() as db:
-                    actual = db.execute("""
+                    actual = db_execute(db, """
                         SELECT COALESCE(SUM(cantidad), 0) as total,
                                COUNT(DISTINCT fecha) as dias
-                        FROM registros WHERE usuario_id=? AND fecha BETWEEN ? AND ?
+                        FROM registros WHERE usuario_id=%s AND fecha BETWEEN %s AND %s
                     """, (c["id"], sem_actual_desde, sem_actual_hasta)).fetchone()
 
-                    anterior = db.execute("""
+                    anterior = db_execute(db, """
                         SELECT COALESCE(SUM(cantidad), 0) as total,
                                COUNT(DISTINCT fecha) as dias
-                        FROM registros WHERE usuario_id=? AND fecha BETWEEN ? AND ?
+                        FROM registros WHERE usuario_id=%s AND fecha BETWEEN %s AND %s
                     """, (c["id"], sem_anterior_desde, sem_anterior_hasta)).fetchone()
 
                     # Días sin cargar en la última semana
-                    dias_sin_carga = db.execute("""
+                    dias_sin_carga = db_execute(db, """
                         SELECT COUNT(DISTINCT fecha) as dias FROM registros
-                        WHERE usuario_id=? AND fecha BETWEEN ? AND ?
+                        WHERE usuario_id=%s AND fecha BETWEEN %s AND %s
                     """, (c["id"], (hoy_d - timedelta(days=6)).isoformat(), sem_actual_hasta)).fetchone()["dias"]
 
                 prom_actual = round(actual["total"] / actual["dias"], 1) if actual["dias"] else 0
@@ -968,7 +984,7 @@ def panel_admin():
                 df_evo_tend = pd.read_sql_query("""
                     SELECT r.fecha, u.nombre, SUM(r.cantidad) as cantidad
                     FROM registros r JOIN usuarios u ON r.usuario_id = u.id
-                    WHERE r.fecha >= ? AND u.activo = 1
+                    WHERE r.fecha >= %s AND u.activo = 1
                     GROUP BY r.fecha, u.nombre ORDER BY r.fecha
                 """, db, params=(sem_anterior_desde,))
 
@@ -1005,7 +1021,7 @@ def panel_admin():
                 st.error("Completá título y mensaje.")
             else:
                 with get_db() as db:
-                    db.execute("INSERT INTO avisos (titulo, mensaje, prioridad, creado_por) VALUES (?,?,?,?)",
+                    db_execute(db, "INSERT INTO avisos (titulo, mensaje, prioridad, creado_por) VALUES (%s,%s,%s,%s)",
                                (aviso_titulo.strip(), aviso_msg.strip(), aviso_prio, user["id"]))
                     db.commit()
                     log_audit(db, user["id"], "aviso", aviso_titulo.strip())
@@ -1015,7 +1031,7 @@ def panel_admin():
         st.divider()
         st.markdown("##### Avisos activos")
         with get_db() as db:
-            avisos_admin = db.execute("""
+            avisos_admin = db_execute(db, """
                 SELECT a.id, a.titulo, a.mensaje, a.prioridad, a.creado_en
                 FROM avisos a WHERE a.activo = 1 ORDER BY a.creado_en DESC
             """).fetchall()
@@ -1025,11 +1041,11 @@ def panel_admin():
         else:
             for a in avisos_admin:
                 prio_icon = {"urgente": "🚨", "importante": "⚠️", "normal": "📢"}.get(a["prioridad"], "📢")
-                with st.expander(f"{prio_icon} **{a['titulo']}** — {a['creado_en'][:16]}"):
+                with st.expander(f"{prio_icon} **{a['titulo']}** — {fmt_ts(a['creado_en'])}"):
                     st.write(a["mensaje"])
                     if st.button("🗑 Desactivar aviso", key=f"avdel_{a['id']}"):
                         with get_db() as db:
-                            db.execute("UPDATE avisos SET activo=0 WHERE id=?", (a["id"],))
+                            db_execute(db, "UPDATE avisos SET activo=0 WHERE id=%s", (a["id"],))
                             db.commit()
                         st.rerun()
 
@@ -1037,21 +1053,21 @@ def panel_admin():
         st.markdown("##### 💬 Mensajes de los colaboradores")
         msg_fecha = st.date_input("Ver mensajes del", value=date.today(), key="msg_fecha_admin")
         with get_db() as db:
-            msgs = db.execute("""
+            msgs = db_execute(db, """
                 SELECT u.nombre, m.mensaje, m.creado_en
                 FROM mensajes_dia m JOIN usuarios u ON m.usuario_id = u.id
-                WHERE m.fecha = ? ORDER BY m.creado_en DESC
+                WHERE m.fecha = %s ORDER BY m.creado_en DESC
             """, (msg_fecha.isoformat(),)).fetchall()
         if msgs:
             for m in msgs:
-                st.info(f"**{m['nombre']}** ({m['creado_en'][:16]}): {m['mensaje']}")
+                st.info(f"**{m['nombre']}** ({fmt_ts(m['creado_en'])}): {m['mensaje']}")
         else:
             st.caption("No hay mensajes para esta fecha.")
 
     # ── Rendimiento individual ──
     with tab_rend:
         with get_db() as db:
-            colabs = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if not colabs:
             st.info("No hay colaboradores cargados.")
@@ -1070,7 +1086,7 @@ def panel_admin():
                 df_r = pd.read_sql_query("""
                     SELECT r.fecha, t.nombre as tarea, r.cantidad, r.turno, r.observacion
                     FROM registros r JOIN tareas t ON r.tarea_id = t.id
-                    WHERE r.usuario_id = ? AND r.fecha BETWEEN ? AND ?
+                    WHERE r.usuario_id = %s AND r.fecha BETWEEN %s AND %s
                     ORDER BY r.fecha DESC
                 """, db, params=(uid, rd.isoformat(), rh.isoformat()))
 
@@ -1092,9 +1108,9 @@ def panel_admin():
                 rh_ant = rd - timedelta(days=1)
 
                 with get_db() as db:
-                    ant = db.execute("""
+                    ant = db_execute(db, """
                         SELECT COALESCE(SUM(cantidad),0) as total
-                        FROM registros WHERE usuario_id=? AND fecha BETWEEN ? AND ?
+                        FROM registros WHERE usuario_id=%s AND fecha BETWEEN %s AND %s
                     """, (uid, rd_ant.isoformat(), rh_ant.isoformat())).fetchone()["total"]
 
                 if ant > 0:
@@ -1119,10 +1135,69 @@ def panel_admin():
                 with st.expander("Ver detalle de registros"):
                     st.dataframe(df_r, use_container_width=True, hide_index=True)
 
+                # ── Editar registros (admin) ──
+                st.divider()
+                st.markdown("#### ✏️ Editar registros del colaborador")
+                st.caption("Corregí registros que no coincidan con los reportes del sistema.")
+
+                fecha_edit = st.date_input("Fecha a editar", value=date.today(), key="admin_edit_fecha")
+
+                with get_db() as db:
+                    regs_edit = db_execute(db, """
+                        SELECT r.id, r.fecha, r.turno, t.nombre as tarea, t.id as tarea_id,
+                               r.cantidad, r.observacion, r.creado_en
+                        FROM registros r JOIN tareas t ON r.tarea_id = t.id
+                        WHERE r.usuario_id = %s AND r.fecha = %s
+                        ORDER BY r.creado_en DESC
+                    """, (uid, fecha_edit.isoformat())).fetchall()
+
+                if not regs_edit:
+                    st.info("No hay registros de este colaborador para esa fecha.")
+                else:
+                    for reg in regs_edit:
+                        with st.expander(f"**{reg['tarea']}** — Cantidad: {reg['cantidad']}  |  Turno: {reg['turno']}  |  {fmt_ts(reg['creado_en'])}"):
+                            if reg["observacion"]:
+                                st.caption(f"Observación del colaborador: {reg['observacion']}")
+
+                            with st.form(f"admin_edit_{reg['id']}"):
+                                ae1, ae2 = st.columns(2)
+                                with ae1:
+                                    nueva_cant = st.number_input("Cantidad corregida", value=reg["cantidad"], min_value=0, key=f"ae_c_{reg['id']}")
+                                with ae2:
+                                    nueva_obs = st.text_input("Observación del admin", value="", key=f"ae_o_{reg['id']}",
+                                                               placeholder="Ej: Corregido, el sistema reporta 45")
+                                col_guardar, col_eliminar = st.columns(2)
+                                with col_guardar:
+                                    guardar = st.form_submit_button("💾 Guardar corrección")
+                                with col_eliminar:
+                                    eliminar = st.form_submit_button("🗑 Eliminar registro")
+
+                            if guardar:
+                                obs_final = reg["observacion"] or ""
+                                if nueva_obs.strip():
+                                    obs_final = f"{obs_final} | [ADMIN: {nueva_obs.strip()}]" if obs_final else f"[ADMIN: {nueva_obs.strip()}]"
+                                with get_db() as db:
+                                    db_execute(db, """
+                                        UPDATE registros SET cantidad=%s, observacion=%s, actualizado_en=NOW()
+                                        WHERE id=%s
+                                    """, (nueva_cant, obs_final, reg["id"]))
+                                    log_audit(db, user["id"], "admin_edicion",
+                                              f"Registro #{reg['id']} de {sel}: cantidad {reg['cantidad']}->{nueva_cant}")
+                                st.success(f"✓ Registro corregido: {reg['cantidad']} → {nueva_cant}")
+                                st.rerun()
+
+                            if eliminar:
+                                with get_db() as db:
+                                    db_execute(db, "DELETE FROM registros WHERE id=%s", (reg["id"],))
+                                    log_audit(db, user["id"], "admin_eliminacion",
+                                              f"Registro #{reg['id']} de {sel}: {reg['tarea']} x{reg['cantidad']}")
+                                st.success("Registro eliminado.")
+                                st.rerun()
+
     # ── Comparar colaboradores ──
     with tab_comp:
         with get_db() as db:
-            colabs = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if len(colabs) < 2:
             st.info("Necesitás al menos 2 colaboradores para comparar.")
@@ -1139,7 +1214,7 @@ def panel_admin():
 
             if len(seleccion) >= 2:
                 ids = [nombres[n] for n in seleccion]
-                placeholders = ",".join("?" * len(ids))
+                placeholders = ",".join("%s" * len(ids))
 
                 with get_db() as db:
                     df_c = pd.read_sql_query(f"""
@@ -1147,7 +1222,7 @@ def panel_admin():
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
                         JOIN tareas t ON r.tarea_id = t.id
-                        WHERE r.usuario_id IN ({placeholders}) AND r.fecha BETWEEN ? AND ?
+                        WHERE r.usuario_id IN ({placeholders}) AND r.fecha BETWEEN %s AND %s
                         GROUP BY u.nombre, r.fecha, t.nombre
                         ORDER BY r.fecha
                     """, db, params=(*ids, cd.isoformat(), ch.isoformat()))
@@ -1219,7 +1294,7 @@ def panel_admin():
         PUNTAJES = {"1 — Muy malo": 1, "2 — Malo": 2, "3 — Regular": 3, "4 — Bueno": 4, "5 — Excelente": 5}
 
         with get_db() as db:
-            colabs_eval = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs_eval = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if not colabs_eval:
             st.info("No hay colaboradores cargados.")
@@ -1250,8 +1325,8 @@ def panel_admin():
                 else:
                     uid_eval = nombres_eval[eval_colab]
                     with get_db() as db:
-                        db.execute("""INSERT INTO evaluaciones (usuario_id, fecha, categoria, puntaje, observacion, registrado_por)
-                                      VALUES (?, ?, ?, ?, ?, ?)""",
+                        db_execute(db, """INSERT INTO evaluaciones (usuario_id, fecha, categoria, puntaje, observacion, registrado_por)
+                                      VALUES (%s, %s, %s, %s, %s, %s)""",
                                    (uid_eval, eval_fecha.isoformat(), eval_cat, PUNTAJES[eval_punt],
                                     eval_obs.strip(), user["id"]))
                         log_audit(db, user["id"], "evaluacion_privada",
@@ -1273,20 +1348,20 @@ def panel_admin():
 
             with get_db() as db:
                 if hist_colab == "Todos":
-                    evals = db.execute("""
+                    evals = db_execute(db, """
                         SELECT e.id, u.nombre as colaborador, e.fecha, e.categoria, e.puntaje,
                                e.observacion, e.creado_en
                         FROM evaluaciones e JOIN usuarios u ON e.usuario_id = u.id
-                        WHERE e.fecha BETWEEN ? AND ?
+                        WHERE e.fecha BETWEEN %s AND %s
                         ORDER BY e.fecha DESC, e.creado_en DESC
                     """, (hist_desde.isoformat(), hist_hasta.isoformat())).fetchall()
                 else:
                     uid_hist = nombres_eval[hist_colab]
-                    evals = db.execute("""
+                    evals = db_execute(db, """
                         SELECT e.id, u.nombre as colaborador, e.fecha, e.categoria, e.puntaje,
                                e.observacion, e.creado_en
                         FROM evaluaciones e JOIN usuarios u ON e.usuario_id = u.id
-                        WHERE e.usuario_id = ? AND e.fecha BETWEEN ? AND ?
+                        WHERE e.usuario_id = %s AND e.fecha BETWEEN %s AND %s
                         ORDER BY e.fecha DESC, e.creado_en DESC
                     """, (uid_hist, hist_desde.isoformat(), hist_hasta.isoformat())).fetchall()
 
@@ -1330,17 +1405,17 @@ def panel_admin():
                     puntaje_emoji = {1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵", 5: "🟢"}.get(e["puntaje"], "⚪")
                     with st.expander(f"{puntaje_emoji} {e['fecha']} — **{e['colaborador']}** — {e['categoria']} ({e['puntaje']}/5)"):
                         st.write(e["observacion"])
-                        st.caption(f"Registrado el {e['creado_en'][:16]}")
+                        st.caption(f"Registrado el {fmt_ts(e['creado_en'])}")
                         if st.button("🗑 Eliminar", key=f"edel_{e['id']}"):
                             with get_db() as db:
-                                db.execute("DELETE FROM evaluaciones WHERE id=?", (e["id"],))
+                                db_execute(db, "DELETE FROM evaluaciones WHERE id=%s", (e["id"],))
                             st.rerun()
 
     # ── Asignar tareas ──
     with tab_asignar:
         st.markdown("#### Asignar tarea a un colaborador")
         with get_db() as db:
-            colabs_asig = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs_asig = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if not colabs_asig:
             st.info("No hay colaboradores cargados.")
@@ -1363,7 +1438,7 @@ def panel_admin():
                     uid = nombres_asig[asig_colab]
                     fecha_lim = asig_fecha.isoformat() if asig_fecha else None
                     with get_db() as db:
-                        db.execute("INSERT INTO asignaciones (usuario_id, descripcion, fecha_limite, prioridad) VALUES (?,?,?,?)",
+                        db_execute(db, "INSERT INTO asignaciones (usuario_id, descripcion, fecha_limite, prioridad) VALUES (%s,%s,%s,%s)",
                                    (uid, asig_desc.strip(), fecha_lim, asig_prioridad))
                         log_audit(db, user["id"], "asignacion", f"A {asig_colab}: {asig_desc.strip()[:50]}")
                     st.success(f"✓ Tarea asignada a {asig_colab}")
@@ -1376,7 +1451,7 @@ def panel_admin():
 
             with get_db() as db:
                 if filtro_asig == "Todos":
-                    asignaciones = db.execute("""
+                    asignaciones = db_execute(db, """
                         SELECT a.id, u.nombre as colaborador, a.descripcion, a.fecha_limite,
                                a.prioridad, a.estado, a.creado_en, a.completado_en
                         FROM asignaciones a JOIN usuarios u ON a.usuario_id = u.id
@@ -1387,11 +1462,11 @@ def panel_admin():
                     """).fetchall()
                 else:
                     uid_f = nombres_asig[filtro_asig]
-                    asignaciones = db.execute("""
+                    asignaciones = db_execute(db, """
                         SELECT a.id, u.nombre as colaborador, a.descripcion, a.fecha_limite,
                                a.prioridad, a.estado, a.creado_en, a.completado_en
                         FROM asignaciones a JOIN usuarios u ON a.usuario_id = u.id
-                        WHERE a.usuario_id = ?
+                        WHERE a.usuario_id = %s
                         ORDER BY
                             CASE a.estado WHEN 'pendiente' THEN 1 WHEN 'completada' THEN 2 END,
                             a.creado_en DESC
@@ -1408,19 +1483,19 @@ def panel_admin():
 
                     with st.expander(titulo):
                         st.write(a["descripcion"])
-                        st.caption(f"Prioridad: {a['prioridad']}  ·  Asignada: {a['creado_en'][:16]}")
+                        st.caption(f"Prioridad: {a['prioridad']}  ·  Asignada: {fmt_ts(a['creado_en'])}")
                         if a["estado"] == "completada":
-                            st.caption(f"✅ Completada el {a['completado_en'][:16]}")
+                            st.caption(f"✅ Completada el {fmt_ts(a['completado_en'])}")
                         col_a1, col_a2 = st.columns(2)
                         if a["estado"] == "pendiente":
                             if col_a1.button("✅ Marcar completada", key=f"acomp_{a['id']}"):
                                 with get_db() as db:
-                                    db.execute("UPDATE asignaciones SET estado='completada', completado_en=datetime('now','localtime') WHERE id=?",
+                                    db_execute(db, "UPDATE asignaciones SET estado='completada', completado_en=NOW() WHERE id=%s",
                                                (a["id"],))
                                 st.rerun()
                         if col_a2.button("🗑 Eliminar", key=f"adel_{a['id']}"):
                             with get_db() as db:
-                                db.execute("DELETE FROM asignaciones WHERE id=?", (a["id"],))
+                                db_execute(db, "DELETE FROM asignaciones WHERE id=%s", (a["id"],))
                             st.rerun()
 
     # ── Flujos de trabajo ──
@@ -1429,7 +1504,7 @@ def panel_admin():
         st.caption("Creá tareas complejas que pasan de un colaborador a otro por etapas.")
 
         with get_db() as db:
-            colabs_flujo = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs_flujo = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
         if not colabs_flujo:
             st.info("No hay colaboradores cargados.")
@@ -1476,12 +1551,12 @@ def panel_admin():
             with col_crear:
                 if st.button("✅ Crear flujo", type="primary", disabled=len(st.session_state.pasos_temp) < 2 or not flujo_nombre):
                     with get_db() as db:
-                        cur = db.execute("INSERT INTO flujos (nombre, descripcion, creado_por) VALUES (?, ?, ?)",
+                        cur = db_execute(db, "INSERT INTO flujos (nombre, descripcion, creado_por) VALUES (%s, %s, %s) RETURNING id",
                                          (flujo_nombre.strip(), flujo_desc.strip(), user["id"]))
-                        flujo_id = cur.lastrowid
+                        flujo_id = cur.fetchone()['id']
                         for i, paso in enumerate(st.session_state.pasos_temp):
                             estado = "pendiente" if i == 0 else "bloqueado"
-                            db.execute("INSERT INTO flujo_pasos (flujo_id, numero_paso, usuario_id, descripcion, estado) VALUES (?,?,?,?,?)",
+                            db_execute(db, "INSERT INTO flujo_pasos (flujo_id, numero_paso, usuario_id, descripcion, estado) VALUES (%s,%s,%s,%s,%s)",
                                        (flujo_id, i + 1, paso["usuario_id"], paso["descripcion"], estado))
                         db.commit()
                         log_audit(db, user["id"], "flujo_creado",
@@ -1499,7 +1574,7 @@ def panel_admin():
             # ── Flujos activos ──
             st.markdown("##### Flujos activos")
             with get_db() as db:
-                flujos = db.execute("""
+                flujos = db_execute(db, """
                     SELECT f.id, f.nombre, f.descripcion, f.estado, f.creado_en
                     FROM flujos f ORDER BY
                         CASE f.estado WHEN 'en_curso' THEN 1 WHEN 'completado' THEN 2 END,
@@ -1516,17 +1591,17 @@ def panel_admin():
                             st.caption(f["descripcion"])
 
                         with get_db() as db:
-                            pasos = db.execute("""
+                            pasos = db_execute(db, """
                                 SELECT fp.id, fp.numero_paso, fp.descripcion, fp.estado,
                                        u.nombre as colaborador, fp.completado_en
                                 FROM flujo_pasos fp JOIN usuarios u ON fp.usuario_id = u.id
-                                WHERE fp.flujo_id = ?
+                                WHERE fp.flujo_id = %s
                                 ORDER BY fp.numero_paso
                             """, (f["id"],)).fetchall()
 
                         for p in pasos:
                             if p["estado"] == "completada":
-                                st.success(f"**Paso {p['numero_paso']}:** {p['descripcion']} → {p['colaborador']} ✅ ({p['completado_en'][:16]})")
+                                st.success(f"**Paso {p['numero_paso']}:** {p['descripcion']} → {p['colaborador']} ✅ ({fmt_ts(p['completado_en'])})")
                             elif p["estado"] == "pendiente":
                                 st.warning(f"**Paso {p['numero_paso']}:** {p['descripcion']} → {p['colaborador']} ⏳ En espera")
                             else:
@@ -1535,8 +1610,8 @@ def panel_admin():
                         if f["estado"] == "en_curso":
                             if st.button("🗑 Cancelar flujo", key=f"fdel_{f['id']}"):
                                 with get_db() as db:
-                                    db.execute("DELETE FROM flujo_pasos WHERE flujo_id=?", (f["id"],))
-                                    db.execute("DELETE FROM flujos WHERE id=?", (f["id"],))
+                                    db_execute(db, "DELETE FROM flujo_pasos WHERE flujo_id=%s", (f["id"],))
+                                    db_execute(db, "DELETE FROM flujos WHERE id=%s", (f["id"],))
                                     db.commit()
                                 st.rerun()
 
@@ -1557,17 +1632,17 @@ def panel_admin():
             else:
                 try:
                     with get_db() as db:
-                        db.execute("INSERT INTO usuarios (nombre, password_hash, rol) VALUES (?, ?, 'usuario')",
+                        db_execute(db, "INSERT INTO usuarios (nombre, password_hash, rol) VALUES (%s, %s, 'usuario')",
                                    (nuevo_nombre.strip(), hash_pw(nueva_pw)))
                         log_audit(db, user["id"], "alta_usuario", f"Nuevo usuario: {nuevo_nombre}")
                     st.success(f"✓ '{nuevo_nombre}' creado.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except psycopg2.errors.UniqueViolation:
                     st.error("Ese nombre de usuario ya existe.")
 
         st.markdown("#### Colaboradores actuales")
         with get_db() as db:
-            colabs = db.execute("SELECT id, nombre, activo, creado_en FROM usuarios WHERE rol='usuario' ORDER BY nombre").fetchall()
+            colabs = db_execute(db, "SELECT id, nombre, activo, creado_en FROM usuarios WHERE rol='usuario' ORDER BY nombre").fetchall()
 
         for c in colabs:
             col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
@@ -1577,19 +1652,19 @@ def panel_admin():
             if c["activo"]:
                 if col3.button("Desactivar", key=f"des_{c['id']}"):
                     with get_db() as db:
-                        db.execute("UPDATE usuarios SET activo=0 WHERE id=?", (c["id"],))
+                        db_execute(db, "UPDATE usuarios SET activo=0 WHERE id=%s", (c["id"],))
                         log_audit(db, user["id"], "desactivar_usuario", c["nombre"])
                     st.rerun()
             else:
                 if col3.button("Activar", key=f"act_{c['id']}"):
                     with get_db() as db:
-                        db.execute("UPDATE usuarios SET activo=1 WHERE id=?", (c["id"],))
+                        db_execute(db, "UPDATE usuarios SET activo=1 WHERE id=%s", (c["id"],))
                         log_audit(db, user["id"], "activar_usuario", c["nombre"])
                     st.rerun()
 
             if col4.button("🔑 Reset", key=f"rst_{c['id']}"):
                 with get_db() as db:
-                    db.execute("UPDATE usuarios SET password_hash=? WHERE id=?",
+                    db_execute(db, "UPDATE usuarios SET password_hash=%s WHERE id=%s",
                                (hash_pw("123456"), c["id"]))
                     log_audit(db, user["id"], "reset_password", c["nombre"])
                 st.info(f"Contraseña de '{c['nombre']}' reseteada a: **123456**")
@@ -1607,16 +1682,16 @@ def panel_admin():
             else:
                 try:
                     with get_db() as db:
-                        db.execute("INSERT INTO tareas (nombre) VALUES (?)", (nombre_tarea.strip(),))
+                        db_execute(db, "INSERT INTO tareas (nombre) VALUES (%s)", (nombre_tarea.strip(),))
                         log_audit(db, user["id"], "alta_tarea", nombre_tarea)
                     st.success(f"✓ Tarea '{nombre_tarea}' creada.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except psycopg2.errors.UniqueViolation:
                     st.error("Esa tarea ya existe.")
 
         st.markdown("#### Tareas actuales")
         with get_db() as db:
-            tareas_list = db.execute("SELECT id, nombre, activa FROM tareas ORDER BY nombre").fetchall()
+            tareas_list = db_execute(db, "SELECT id, nombre, activa FROM tareas ORDER BY nombre").fetchall()
 
         for t in tareas_list:
             ct1, ct2, ct3 = st.columns([4, 1, 1])
@@ -1625,13 +1700,13 @@ def panel_admin():
             if t["activa"]:
                 if ct3.button("Desactivar", key=f"dt_{t['id']}"):
                     with get_db() as db:
-                        db.execute("UPDATE tareas SET activa=0 WHERE id=?", (t["id"],))
+                        db_execute(db, "UPDATE tareas SET activa=0 WHERE id=%s", (t["id"],))
                         log_audit(db, user["id"], "desactivar_tarea", t["nombre"])
                     st.rerun()
             else:
                 if ct3.button("Activar", key=f"at_{t['id']}"):
                     with get_db() as db:
-                        db.execute("UPDATE tareas SET activa=1 WHERE id=?", (t["id"],))
+                        db_execute(db, "UPDATE tareas SET activa=1 WHERE id=%s", (t["id"],))
                         log_audit(db, user["id"], "activar_tarea", t["nombre"])
                     st.rerun()
 
@@ -1657,8 +1732,8 @@ def panel_admin():
                 tarea_id = tareas[meta_tarea]
                 with get_db() as db:
                     # Reemplazar si ya existe
-                    db.execute("DELETE FROM metas WHERE tarea_id=? AND periodo=?", (tarea_id, meta_periodo))
-                    db.execute("INSERT INTO metas (tarea_id, cantidad_objetivo, periodo) VALUES (?,?,?)",
+                    db_execute(db, "DELETE FROM metas WHERE tarea_id=%s AND periodo=%s", (tarea_id, meta_periodo))
+                    db_execute(db, "INSERT INTO metas (tarea_id, cantidad_objetivo, periodo) VALUES (%s,%s,%s)",
                                (tarea_id, meta_cant, meta_periodo))
                     log_audit(db, user["id"], "meta",
                               f"{meta_tarea}: {meta_cant} por {meta_periodo}")
@@ -1667,7 +1742,7 @@ def panel_admin():
 
         st.markdown("#### Metas actuales")
         with get_db() as db:
-            metas = db.execute("""
+            metas = db_execute(db, """
                 SELECT m.id, t.nombre as tarea, m.cantidad_objetivo, m.periodo
                 FROM metas m JOIN tareas t ON m.tarea_id = t.id
                 ORDER BY t.nombre
@@ -1681,7 +1756,7 @@ def panel_admin():
                 cm3.write(m["periodo"])
                 if cm4.button("🗑", key=f"dm_{m['id']}"):
                     with get_db() as db:
-                        db.execute("DELETE FROM metas WHERE id=?", (m["id"],))
+                        db_execute(db, "DELETE FROM metas WHERE id=%s", (m["id"],))
                     st.rerun()
         else:
             st.info("No hay metas definidas.")
@@ -1703,9 +1778,9 @@ def panel_admin():
 
         if st.button("Guardar configuración", type="primary"):
             with get_db() as db:
-                db.execute("UPDATE configuracion SET valor=? WHERE clave='dias_editables'",
+                db_execute(db, "UPDATE configuracion SET valor=%s WHERE clave='dias_editables'",
                            (str(nuevo_dias),))
-                db.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES ('dias_dashboard', ?)",
+                db_execute(db, "INSERT INTO configuracion (clave, valor) VALUES ('dias_dashboard', %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor",
                            (str(nuevo_dias_dash),))
                 log_audit(db, user["id"], "config", f"dias_editables: {nuevo_dias}, dias_dashboard: {nuevo_dias_dash}")
             st.success("✓ Configuración guardada.")
@@ -1725,11 +1800,11 @@ def panel_admin():
                 st.error("La contraseña debe tener al menos 4 caracteres.")
             else:
                 with get_db() as db:
-                    row = db.execute("SELECT password_hash FROM usuarios WHERE id=?", (user["id"],)).fetchone()
+                    row = db_execute(db, "SELECT password_hash FROM usuarios WHERE id=%s", (user["id"],)).fetchone()
                     if row["password_hash"] != hash_pw(pw_actual):
                         st.error("La contraseña actual es incorrecta.")
                     else:
-                        db.execute("UPDATE usuarios SET password_hash=? WHERE id=?",
+                        db_execute(db, "UPDATE usuarios SET password_hash=%s WHERE id=%s",
                                    (hash_pw(pw_nueva), user["id"]))
                         log_audit(db, user["id"], "cambio_password", "Admin cambió su contraseña")
                         st.success("✓ Contraseña actualizada.")
@@ -1746,7 +1821,7 @@ def panel_admin():
 
         # Filtro por colaborador
         with get_db() as db:
-            colabs_exp = db.execute("SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+            colabs_exp = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
         nombres_exp = ["Todos"] + [c["nombre"] for c in colabs_exp]
         filtro_colab = st.selectbox("Colaborador", nombres_exp, key="exp_colab")
 
@@ -1764,7 +1839,7 @@ def panel_admin():
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
                         JOIN tareas t ON r.tarea_id = t.id
-                        WHERE r.fecha BETWEEN ? AND ?
+                        WHERE r.fecha BETWEEN %s AND %s
                         ORDER BY r.fecha DESC, u.nombre
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat()))
                 else:
@@ -1775,7 +1850,7 @@ def panel_admin():
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
                         JOIN tareas t ON r.tarea_id = t.id
-                        WHERE r.fecha BETWEEN ? AND ? AND u.nombre = ?
+                        WHERE r.fecha BETWEEN %s AND %s AND u.nombre = %s
                         ORDER BY r.fecha DESC
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat(), filtro_colab))
 
@@ -1822,7 +1897,7 @@ def panel_admin():
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
                         JOIN tareas t ON r.tarea_id = t.id
-                        WHERE r.fecha BETWEEN ? AND ?
+                        WHERE r.fecha BETWEEN %s AND %s
                         ORDER BY r.fecha, u.nombre
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat()))
                 else:
@@ -1833,11 +1908,11 @@ def panel_admin():
                         FROM registros r
                         JOIN usuarios u ON r.usuario_id = u.id
                         JOIN tareas t ON r.tarea_id = t.id
-                        WHERE r.fecha BETWEEN ? AND ? AND u.nombre = ?
+                        WHERE r.fecha BETWEEN %s AND %s AND u.nombre = %s
                         ORDER BY r.fecha
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat(), filtro_colab))
 
-                metas_db = db.execute("""
+                metas_db = db_execute(db, """
                     SELECT t.nombre as tarea, m.cantidad_objetivo, m.periodo
                     FROM metas m JOIN tareas t ON m.tarea_id = t.id
                 """).fetchall()
@@ -2010,17 +2085,17 @@ def panel_admin():
                 if inc_evaluaciones:
                     with get_db() as db:
                         if filtro_colab == "Todos":
-                            evals_pdf = db.execute("""
+                            evals_pdf = db_execute(db, """
                                 SELECT u.nombre as colaborador, e.fecha, e.categoria, e.puntaje, e.observacion
                                 FROM evaluaciones e JOIN usuarios u ON e.usuario_id = u.id
-                                WHERE e.fecha BETWEEN ? AND ?
+                                WHERE e.fecha BETWEEN %s AND %s
                                 ORDER BY u.nombre, e.fecha DESC
                             """, (exp_desde.isoformat(), exp_hasta.isoformat())).fetchall()
                         else:
-                            evals_pdf = db.execute("""
+                            evals_pdf = db_execute(db, """
                                 SELECT u.nombre as colaborador, e.fecha, e.categoria, e.puntaje, e.observacion
                                 FROM evaluaciones e JOIN usuarios u ON e.usuario_id = u.id
-                                WHERE u.nombre = ? AND e.fecha BETWEEN ? AND ?
+                                WHERE u.nombre = %s AND e.fecha BETWEEN %s AND %s
                                 ORDER BY e.fecha DESC
                             """, (filtro_colab, exp_desde.isoformat(), exp_hasta.isoformat())).fetchall()
 
@@ -2068,7 +2143,7 @@ def panel_admin():
     with tab_audit:
         st.markdown("#### Log de actividad")
         with get_db() as db:
-            logs = db.execute("""
+            logs = db_execute(db, """
                 SELECT a.fecha_hora, COALESCE(u.nombre, 'sistema') as usuario, a.accion, a.detalle
                 FROM audit_log a LEFT JOIN usuarios u ON a.usuario_id = u.id
                 ORDER BY a.fecha_hora DESC LIMIT 200
