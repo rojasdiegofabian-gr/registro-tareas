@@ -24,8 +24,8 @@ from fpdf import FPDF
 # ─────────────────────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-DB_HOST = "aws-1-us-west-2.pooler.supabase.com"
-DB_PORT = "6543"
+DB_HOST = "db.hfuafmdpvfginosodqxc.supabase.co"
+DB_PORT = "5432"
 DB_NAME = "postgres"
 DB_USER = "postgres.hfuafmdpvfginosodqxc"
 DB_PASS = "Registo2026"
@@ -205,6 +205,14 @@ def fmt_ts(val):
     except Exception:
         return str(val)[:16]
 
+
+
+def fix_df_types(df):
+    """Convierte columnas numéricas que PostgreSQL puede devolver como string."""
+    for col in ["cantidad", "puntaje", "cantidad_objetivo", "total", "id"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    return df
 
 
 # ─────────────────────────────────────────────────
@@ -617,6 +625,7 @@ def panel_usuario():
                 WHERE r.usuario_id = %s AND r.fecha BETWEEN %s AND %s
                 ORDER BY r.fecha
             """, db, params=(user["id"], est_desde.isoformat(), est_hasta.isoformat()))
+            if not df.empty: df = fix_df_types(df)
 
         if df.empty:
             st.info("Sin datos en este período.")
@@ -853,6 +862,7 @@ def panel_admin():
                 WHERE r.fecha >= %s AND u.activo = 1
                 GROUP BY r.fecha, u.nombre ORDER BY r.fecha
             """, db, params=(hace14,))
+            if not df_equipo.empty: df_equipo = fix_df_types(df_equipo)
 
         if not df_equipo.empty:
             COLORES_DASH = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
@@ -997,6 +1007,7 @@ def panel_admin():
                     WHERE r.fecha >= %s AND u.activo = 1
                     GROUP BY r.fecha, u.nombre ORDER BY r.fecha
                 """, db, params=(sem_anterior_desde,))
+                if not df_evo_tend.empty: df_evo_tend = fix_df_types(df_evo_tend)
 
             if not df_evo_tend.empty:
                 COLORES_T = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
@@ -1099,6 +1110,7 @@ def panel_admin():
                     WHERE r.usuario_id = %s AND r.fecha BETWEEN %s AND %s
                     ORDER BY r.fecha DESC
                 """, db, params=(uid, rd.isoformat(), rh.isoformat()))
+                if not df_r.empty: df_r = fix_df_types(df_r)
 
             if df_r.empty:
                 st.info("Sin registros en este período.")
@@ -1237,6 +1249,7 @@ def panel_admin():
                         ORDER BY r.fecha
                     """
                     df_c = pd.read_sql_query(query, db, params=(*ids, cd.isoformat(), ch.isoformat()))
+                    if not df_c.empty: df_c = fix_df_types(df_c)
 
                 if df_c.empty:
                     st.info("Sin datos para comparar en este período.")
@@ -1859,6 +1872,7 @@ def panel_admin():
                         WHERE r.fecha BETWEEN %s AND %s
                         ORDER BY r.fecha DESC, u.nombre
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat()))
+                    if not df_exp.empty: df_exp = fix_df_types(df_exp)
                 else:
                     df_exp = pd.read_sql_query("""
                         SELECT u.nombre as Colaborador, r.fecha as Fecha, r.turno as Turno,
@@ -1870,6 +1884,7 @@ def panel_admin():
                         WHERE r.fecha BETWEEN %s AND %s AND u.nombre = %s
                         ORDER BY r.fecha DESC
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat(), filtro_colab))
+                    if not df_exp.empty: df_exp = fix_df_types(df_exp)
 
             if df_exp.empty:
                 st.info("No hay registros en este período.")
@@ -1917,6 +1932,7 @@ def panel_admin():
                         WHERE r.fecha BETWEEN %s AND %s
                         ORDER BY r.fecha, u.nombre
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat()))
+                    if not df_pdf.empty: df_pdf = fix_df_types(df_pdf)
                 else:
                     df_pdf = pd.read_sql_query("""
                         SELECT u.nombre as Colaborador, r.fecha as Fecha, r.turno as Turno,
@@ -1928,6 +1944,7 @@ def panel_admin():
                         WHERE r.fecha BETWEEN %s AND %s AND u.nombre = %s
                         ORDER BY r.fecha
                     """, db, params=(exp_desde.isoformat(), exp_hasta.isoformat(), filtro_colab))
+                    if not df_pdf.empty: df_pdf = fix_df_types(df_pdf)
 
                 metas_db = db_execute(db, """
                     SELECT t.nombre as tarea, m.cantidad_objetivo, m.periodo
