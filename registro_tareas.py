@@ -24,7 +24,7 @@ from fpdf import FPDF
 # ─────────────────────────────────────────────────
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres.hfuafmdpvfginosodqxc:Gerenciar2535@aws-1-us-west-2.pooler.supabase.com:6543/postgres?sslmode=require"
+    "postgresql://postgres.hfuafmdpvfginosodqxc:Registo2026@aws-1-us-west-2.pooler.supabase.com:6543/postgres?sslmode=require"
 )
 
 
