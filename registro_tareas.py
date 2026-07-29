@@ -51,11 +51,48 @@ def get_db():
         conn.close()
 
 
+from decimal import Decimal
+
+
 def db_execute(conn, query, params=None):
-    """Helper: ejecuta query y retorna cursor."""
+    """Helper: ejecuta query y retorna cursor con wrapper para convertir Decimal."""
     cur = conn.cursor()
     cur.execute(query, params or ())
-    return cur
+    return CursorWrapper(cur)
+
+
+class CursorWrapper:
+    """Wrapper de cursor que convierte Decimal a float automáticamente."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    @staticmethod
+    def _clean(val):
+        if isinstance(val, Decimal):
+            return float(val)
+        return val
+
+    @staticmethod
+    def _clean_row(row):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return {k: CursorWrapper._clean(v) for k, v in row.items()}
+        return row
+
+    def fetchone(self):
+        return self._clean_row(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._clean_row(r) for r in self._cursor.fetchall()]
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+    @property
+    def description(self):
+        return self._cursor.description
 
 
 def init_db():
