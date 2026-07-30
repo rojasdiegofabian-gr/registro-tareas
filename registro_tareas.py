@@ -34,12 +34,12 @@ DB_PASS = "Registo2026"
 @contextmanager
 def get_db():
     if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(DATABASE_URL)
     else:
         conn = psycopg2.connect(
             host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
             user=DB_USER, password=DB_PASS,
-            sslmode="require", cursor_factory=RealDictCursor
+            sslmode="require"
         )
     try:
         yield conn
@@ -56,7 +56,7 @@ from decimal import Decimal
 
 def db_execute(conn, query, params=None):
     """Helper: ejecuta query y retorna cursor con wrapper para convertir Decimal."""
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute(query, params or ())
     return CursorWrapper(cur)
 
@@ -97,7 +97,7 @@ class CursorWrapper:
 
 def init_db():
     with get_db() as db:
-        cur = db.cursor()
+        cur = db.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id SERIAL PRIMARY KEY,
@@ -2265,4 +2265,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()s
