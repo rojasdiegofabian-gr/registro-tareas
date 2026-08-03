@@ -819,8 +819,8 @@ def panel_admin():
     </div>
     """, unsafe_allow_html=True)
 
-    tab_dash, tab_tend, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
-        "📊 Dashboard", "📈 Tendencias", "👤 Rendimiento", "🔀 Comparar", "🔒 Evaluaciones",
+    tab_dash, tab_tend, tab_repmens, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
+        "📊 Dashboard", "📈 Tendencias", "📆 Reporte mensual", "👤 Rendimiento", "🔀 Comparar", "🔒 Evaluaciones",
         "📢 Avisos", "📌 Asignar tareas", "🔄 Flujos", "👥 Colaboradores", "📋 Tareas",
         "🎯 Metas", "⚙ Configuración", "📥 Exportar", "📜 Auditoría"
     ])
@@ -1122,6 +1122,199 @@ def panel_admin():
         else:
             st.caption("No hay mensajes para esta fecha.")
 
+    # ── Reporte mensual del sector ──
+    with tab_repmens:
+        st.markdown("#### 📆 Reporte de productividad mensual")
+        st.caption("Evolución mes a mes del sector completo.")
+
+        # Selector de rango de meses
+        hoy_d = date.today()
+        anio_actual = hoy_d.year
+        meses_disponibles = []
+        for anio in range(anio_actual - 1, anio_actual + 1):
+            for mes in range(1, 13):
+                meses_disponibles.append(f"{anio}-{mes:02d}")
+        mes_actual = f"{hoy_d.year}-{hoy_d.month:02d}"
+
+        rm1, rm2 = st.columns(2)
+        with rm1:
+            meses_sel = st.multiselect("Meses a incluir", meses_disponibles,
+                                        default=[meses_disponibles[i] for i in range(len(meses_disponibles))
+                                                 if meses_disponibles[i] >= f"{anio_actual}-{max(1, hoy_d.month-5):02d}"
+                                                 and meses_disponibles[i] <= mes_actual],
+                                        key="rep_meses")
+
+        if not meses_sel:
+            st.info("Seleccioná al menos un mes.")
+        else:
+            meses_sel = sorted(meses_sel)
+            nombres_meses = {"01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril",
+                             "05": "Mayo", "06": "Junio", "07": "Julio", "08": "Agosto",
+                             "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre"}
+
+            datos_meses = []
+            for mes in meses_sel:
+                anio_m, num_m = mes.split("-")
+                desde_m = f"{mes}-01"
+                # Último día del mes
+                if int(num_m) == 12:
+                    hasta_m = f"{int(anio_m)+1}-01-01"
+                else:
+                    hasta_m = f"{anio_m}-{int(num_m)+1:02d}-01"
+
+                with get_db() as db:
+                    df_mes = pd.read_sql_query("""
+                        SELECT u.nombre as colaborador, t.nombre as tarea, SUM(r.cantidad) as cantidad,
+                               COUNT(DISTINCT r.fecha) as dias_trabajados
+                        FROM registros r
+                        JOIN usuarios u ON r.usuario_id = u.id
+                        JOIN tareas t ON r.tarea_id = t.id
+                        WHERE r.fecha >= %s AND r.fecha < %s AND u.activo = 1
+                        GROUP BY u.nombre, t.nombre
+                    """, db, params=(desde_m, hasta_m))
+                    if not df_mes.empty: df_mes = fix_df_types(df_mes)
+
+                if not df_mes.empty:
+                    total_mes = int(df_mes["cantidad"].sum())
+                    personas_mes = int(df_mes["colaborador"].nunique())
+                    dias_mes = int(df_mes["dias_trabajados"].max()) if not df_mes.empty else 0
+                    etiqueta = f"{nombres_meses.get(num_m, num_m)} {anio_m}"
+                    datos_meses.append({
+                        "mes": mes,
+                        "etiqueta": etiqueta,
+                        "total": total_mes,
+                        "personas": personas_mes,
+                        "dias": dias_mes,
+                        "promedio_diario": round(total_mes / dias_mes, 1) if dias_mes else 0,
+                        "promedio_persona": round(total_mes / personas_mes, 1) if personas_mes else 0,
+                        "df": df_mes
+                    })
+
+            if not datos_meses:
+                st.info("No hay datos para los meses seleccionados.")
+            else:
+                # ── Métricas del último mes ──
+                ultimo = datos_meses[-1]
+                st.markdown(f"##### {ultimo['etiqueta']}")
+                rm1, rm2, rm3, rm4 = st.columns(4)
+                rm1.metric("Total producido", f"{ultimo['total']:,}")
+                rm2.metric("Personas activas", ultimo["personas"])
+                rm3.metric("Promedio diario", ultimo["promedio_diario"])
+                rm4.metric("Promedio por persona", ultimo["promedio_persona"])
+
+                # Comparación con mes anterior si hay más de uno
+                if len(datos_meses) >= 2:
+                    anterior = datos_meses[-2]
+                    if anterior["total"] > 0:
+                        cambio = round((ultimo["total"] - anterior["total"]) / anterior["total"] * 100, 1)
+                        signo = "+" if cambio > 0 else ""
+                        if cambio > 0:
+                            st.success(f"📈 **{signo}{cambio}%** respecto a {anterior['etiqueta']} ({anterior['total']:,} → {ultimo['total']:,})")
+                        elif cambio < -5:
+                            st.error(f"📉 **{cambio}%** respecto a {anterior['etiqueta']} ({anterior['total']:,} → {ultimo['total']:,})")
+                        else:
+                            st.info(f"➡️ **{signo}{cambio}%** respecto a {anterior['etiqueta']} ({anterior['total']:,} → {ultimo['total']:,})")
+
+                # ── Gráfico de evolución mensual ──
+                st.markdown("##### Evolución mensual del sector")
+                df_evol = pd.DataFrame([{
+                    "Mes": d["etiqueta"],
+                    "Total producido": d["total"],
+                    "Promedio diario": d["promedio_diario"],
+                    "Promedio por persona": d["promedio_persona"]
+                } for d in datos_meses])
+
+                fig_total = px.bar(df_evol, x="Mes", y="Total producido",
+                                   color_discrete_sequence=["#2563eb"])
+                fig_total.update_traces(texttemplate='%{y:,.0f}', textposition='outside')
+                fig_total.update_layout(height=350, xaxis_title="", yaxis_title="Total producido")
+                st.plotly_chart(fig_total, use_container_width=True)
+
+                # Líneas de promedios
+                fig_prom = go.Figure()
+                fig_prom.add_trace(go.Scatter(x=df_evol["Mes"], y=df_evol["Promedio diario"],
+                                              mode="lines+markers+text", name="Promedio diario",
+                                              line=dict(color="#059669", width=3),
+                                              text=[str(v) for v in df_evol["Promedio diario"]],
+                                              textposition="top center"))
+                fig_prom.add_trace(go.Scatter(x=df_evol["Mes"], y=df_evol["Promedio por persona"],
+                                              mode="lines+markers+text", name="Promedio por persona",
+                                              line=dict(color="#d97706", width=3),
+                                              text=[str(v) for v in df_evol["Promedio por persona"]],
+                                              textposition="top center"))
+                fig_prom.update_layout(height=350, xaxis_title="", yaxis_title="Promedio",
+                                       legend=dict(orientation="h", y=1.1))
+                st.plotly_chart(fig_prom, use_container_width=True)
+
+                # ── Tabla comparativa mes a mes ──
+                st.markdown("##### Tabla comparativa")
+                tabla_comp = []
+                for i, d in enumerate(datos_meses):
+                    fila = {
+                        "Mes": d["etiqueta"],
+                        "Total": d["total"],
+                        "Personas": d["personas"],
+                        "Días": d["dias"],
+                        "Prom. diario": d["promedio_diario"],
+                        "Prom. persona": d["promedio_persona"],
+                    }
+                    if i > 0:
+                        ant = datos_meses[i-1]["total"]
+                        fila["Var. %"] = round((d["total"] - ant) / ant * 100, 1) if ant else 0
+                    else:
+                        fila["Var. %"] = 0
+                    tabla_comp.append(fila)
+
+                df_tabla = pd.DataFrame(tabla_comp)
+                st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+
+                # ── Desglose por colaborador mes a mes ──
+                st.markdown("##### Evolución por colaborador")
+                todos_colabs = set()
+                for d in datos_meses:
+                    todos_colabs.update(d["df"]["colaborador"].unique())
+
+                evol_colabs = []
+                for colab in sorted(todos_colabs):
+                    for d in datos_meses:
+                        df_c = d["df"][d["df"]["colaborador"] == colab]
+                        total_c = int(df_c["cantidad"].sum()) if not df_c.empty else 0
+                        evol_colabs.append({"Colaborador": colab, "Mes": d["etiqueta"], "Total": total_c})
+
+                df_evol_c = pd.DataFrame(evol_colabs)
+                if not df_evol_c.empty:
+                    COLORES_RM = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
+                                  "#db2777", "#0891b2", "#65a30d", "#ea580c", "#6366f1"]
+                    noms_c = df_evol_c["Colaborador"].unique().tolist()
+                    cmap_rm = {n: COLORES_RM[i % len(COLORES_RM)] for i, n in enumerate(noms_c)}
+
+                    fig_ec = px.bar(df_evol_c, x="Mes", y="Total", color="Colaborador",
+                                    barmode="group", color_discrete_map=cmap_rm)
+                    fig_ec.update_traces(texttemplate='%{y}', textposition='outside')
+                    fig_ec.update_layout(height=400, xaxis_title="", yaxis_title="Total")
+                    st.plotly_chart(fig_ec, use_container_width=True)
+
+                # ── Desglose por tarea mes a mes ──
+                st.markdown("##### Evolución por tarea")
+                todas_tareas = set()
+                for d in datos_meses:
+                    todas_tareas.update(d["df"]["tarea"].unique())
+
+                evol_tareas = []
+                for tarea in sorted(todas_tareas):
+                    for d in datos_meses:
+                        df_t = d["df"][d["df"]["tarea"] == tarea]
+                        total_t = int(df_t["cantidad"].sum()) if not df_t.empty else 0
+                        evol_tareas.append({"Tarea": tarea, "Mes": d["etiqueta"], "Total": total_t})
+
+                df_evol_t = pd.DataFrame(evol_tareas)
+                if not df_evol_t.empty:
+                    fig_et = px.bar(df_evol_t, x="Mes", y="Total", color="Tarea",
+                                    barmode="group", color_discrete_sequence=px.colors.qualitative.Set2)
+                    fig_et.update_traces(texttemplate='%{y}', textposition='outside')
+                    fig_et.update_layout(height=400, xaxis_title="", yaxis_title="Total")
+                    st.plotly_chart(fig_et, use_container_width=True)
+
     # ── Rendimiento individual ──
     with tab_rend:
         with get_db() as db:
@@ -1213,6 +1406,9 @@ def panel_admin():
                 if not regs_edit:
                     st.info("No hay registros de este colaborador para esa fecha.")
                 else:
+                    tareas_edit = obtener_tareas_activas()
+                    lista_tareas_edit = list(tareas_edit.keys())
+
                     for reg in regs_edit:
                         with st.expander(f"**{reg['tarea']}** — Cantidad: {reg['cantidad']}  |  Turno: {reg['turno']}  |  {fmt_ts(reg['creado_en'])}"):
                             if reg["observacion"]:
@@ -1221,10 +1417,17 @@ def panel_admin():
                             with st.form(f"admin_edit_{reg['id']}"):
                                 ae1, ae2 = st.columns(2)
                                 with ae1:
-                                    nueva_cant = st.number_input("Cantidad corregida", value=reg["cantidad"], min_value=0, key=f"ae_c_{reg['id']}")
+                                    idx_tarea = lista_tareas_edit.index(reg["tarea"]) if reg["tarea"] in lista_tareas_edit else 0
+                                    nueva_tarea = st.selectbox("Tarea", lista_tareas_edit, index=idx_tarea, key=f"ae_t_{reg['id']}")
                                 with ae2:
+                                    nueva_cant = st.number_input("Cantidad", value=reg["cantidad"], min_value=0, key=f"ae_c_{reg['id']}")
+                                ae3, ae4 = st.columns(2)
+                                with ae3:
+                                    idx_turno = TURNOS.index(reg["turno"]) if reg["turno"] in TURNOS else 0
+                                    nuevo_turno = st.selectbox("Turno", TURNOS, index=idx_turno, key=f"ae_tu_{reg['id']}")
+                                with ae4:
                                     nueva_obs = st.text_input("Observación del admin", value="", key=f"ae_o_{reg['id']}",
-                                                               placeholder="Ej: Corregido, el sistema reporta 45")
+                                                               placeholder="Ej: Corregido, era otra tarea")
                                 col_guardar, col_eliminar = st.columns(2)
                                 with col_guardar:
                                     guardar = st.form_submit_button("💾 Guardar corrección")
@@ -1235,14 +1438,22 @@ def panel_admin():
                                 obs_final = reg["observacion"] or ""
                                 if nueva_obs.strip():
                                     obs_final = f"{obs_final} | [ADMIN: {nueva_obs.strip()}]" if obs_final else f"[ADMIN: {nueva_obs.strip()}]"
+                                nueva_tarea_id = tareas_edit[nueva_tarea]
+                                cambios = []
+                                if reg["cantidad"] != nueva_cant:
+                                    cambios.append(f"cantidad {reg['cantidad']}->{nueva_cant}")
+                                if reg["tarea"] != nueva_tarea:
+                                    cambios.append(f"tarea {reg['tarea']}->{nueva_tarea}")
+                                if reg["turno"] != nuevo_turno:
+                                    cambios.append(f"turno {reg['turno']}->{nuevo_turno}")
                                 with get_db() as db:
                                     db_execute(db, """
-                                        UPDATE registros SET cantidad=%s, observacion=%s, actualizado_en=NOW()
+                                        UPDATE registros SET tarea_id=%s, cantidad=%s, turno=%s, observacion=%s, actualizado_en=NOW()
                                         WHERE id=%s
-                                    """, (nueva_cant, obs_final, reg["id"]))
+                                    """, (nueva_tarea_id, nueva_cant, nuevo_turno, obs_final, reg["id"]))
                                     log_audit(db, user["id"], "admin_edicion",
-                                              f"Registro #{reg['id']} de {sel}: cantidad {reg['cantidad']}->{nueva_cant}")
-                                st.success(f"✓ Registro corregido: {reg['cantidad']} → {nueva_cant}")
+                                              f"Registro #{reg['id']} de {sel}: {', '.join(cambios) if cambios else 'obs actualizada'}")
+                                st.success("✓ Registro corregido")
                                 st.rerun()
 
                             if eliminar:
@@ -1929,7 +2140,9 @@ def panel_admin():
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                     df_exp.to_excel(writer, index=False, sheet_name="Registros")
-                    df_res = df_exp.groupby(["Colaborador", "Tarea"])["Cantidad"].sum().reset_index()
+                    df_res = df_exp.groupby(["colaborador", "tarea"])["cantidad"].sum().reset_index()
+                    df_exp.columns = [c.title() for c in df_exp.columns]
+                    df_res.columns = [c.title() for c in df_res.columns]
                     df_res.to_excel(writer, index=False, sheet_name="Resumen")
 
                 st.download_button(
@@ -2051,9 +2264,9 @@ def panel_admin():
                 # ── Resumen general ──
                 if inc_resumen:
                     seccion("Resumen General")
-                    total = df_pdf["Cantidad"].sum()
-                    dias = df_pdf["Fecha"].nunique()
-                    personas = df_pdf["Colaborador"].nunique()
+                    total = df_pdf["cantidad"].sum()
+                    dias = df_pdf["fecha"].nunique()
+                    personas = df_pdf["colaborador"].nunique()
                     promedio = round(total / dias, 1) if dias else 0
                     registros_total = len(df_pdf)
 
@@ -2075,7 +2288,7 @@ def panel_admin():
                 # ── Ranking ──
                 if inc_ranking and filtro_colab == "Todos":
                     seccion("Ranking de Colaboradores")
-                    df_rank = df_pdf.groupby("Colaborador")["Cantidad"].sum().reset_index()
+                    df_rank = df_pdf.groupby("colaborador")["cantidad"].sum().reset_index()
                     df_rank = df_rank.sort_values("Cantidad", ascending=False).reset_index(drop=True)
                     df_rank.insert(0, "Pos.", range(1, len(df_rank) + 1))
                     filas = [list(r) for _, r in df_rank.iterrows()]
@@ -2084,10 +2297,10 @@ def panel_admin():
                 # ── Por colaborador ──
                 if inc_por_colab:
                     seccion("Desglose por Colaborador")
-                    for nombre in sorted(df_pdf["Colaborador"].unique()):
-                        df_c = df_pdf[df_pdf["Colaborador"] == nombre]
-                        total_c = df_c["Cantidad"].sum()
-                        dias_c = df_c["Fecha"].nunique()
+                    for nombre in sorted(df_pdf["colaborador"].unique()):
+                        df_c = df_pdf[df_pdf["colaborador"] == nombre]
+                        total_c = df_c["cantidad"].sum()
+                        dias_c = df_c["fecha"].nunique()
                         prom_c = round(total_c / dias_c, 1) if dias_c else 0
 
                         pdf.set_font("Helvetica", "B", 10)
@@ -2095,17 +2308,17 @@ def panel_admin():
                         pdf.cell(0, 8, f"  {nombre}  -  Total: {total_c:,}  |  Dias: {dias_c}  |  Promedio: {prom_c}", ln=True, fill=True)
                         pdf.ln(2)
 
-                        df_ct = df_c.groupby("Tarea")["Cantidad"].sum().reset_index()
+                        df_ct = df_c.groupby("tarea")["cantidad"].sum().reset_index()
                         df_ct = df_ct.sort_values("Cantidad", ascending=False)
-                        filas = [[r["Tarea"], r["Cantidad"]] for _, r in df_ct.iterrows()]
+                        filas = [[r["tarea"], r["cantidad"]] for _, r in df_ct.iterrows()]
                         tabla(["Tarea", "Cantidad"], filas, [120, 45])
 
                 # ── Por tarea ──
                 if inc_por_tarea:
                     seccion("Desglose por Tarea")
-                    df_t = df_pdf.groupby("Tarea")["Cantidad"].sum().reset_index()
+                    df_t = df_pdf.groupby("tarea")["cantidad"].sum().reset_index()
                     df_t = df_t.sort_values("Cantidad", ascending=False)
-                    filas = [[r["Tarea"], r["Cantidad"]] for _, r in df_t.iterrows()]
+                    filas = [[r["tarea"], r["cantidad"]] for _, r in df_t.iterrows()]
                     tabla(["Tarea", "Cantidad Total"], filas, [120, 50])
 
                 # ── Metas ──
@@ -2115,10 +2328,10 @@ def panel_admin():
                         tarea_n = meta["tarea"]
                         objetivo = meta["cantidad_objetivo"]
                         periodo = meta["periodo"]
-                        df_mt = df_pdf[df_pdf["Tarea"] == tarea_n]
+                        df_mt = df_pdf[df_pdf["tarea"] == tarea_n]
 
                         if periodo == "diario" and not df_mt.empty:
-                            df_dias = df_mt.groupby("Fecha")["Cantidad"].sum()
+                            df_dias = df_mt.groupby("fecha")["cantidad"].sum()
                             cumplidos = int((df_dias >= objetivo).sum())
                             total_dias = len(df_dias)
                             pct = round(cumplidos / total_dias * 100) if total_dias else 0
@@ -2145,8 +2358,8 @@ def panel_admin():
                     seccion("Detalle de Registros")
                     filas = []
                     for _, r in df_pdf.iterrows():
-                        filas.append([r["Fecha"], r["Colaborador"], r["Turno"], r["Tarea"],
-                                      r["Cantidad"], str(r["Observacion"] or "")])
+                        filas.append([r["fecha"], r["colaborador"], r["turno"], r["tarea"],
+                                      r["cantidad"], str(r["observacion"] or "")])
                     tabla(
                         ["Fecha", "Colaborador", "Turno", "Tarea", "Cant.", "Observacion"],
                         filas,
