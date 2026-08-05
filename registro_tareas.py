@@ -851,10 +851,10 @@ def panel_admin():
     """, unsafe_allow_html=True)
 
     tab_dash, tab_tend, tab_repmens, tab_rrhh, tab_metrsec, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
-        "📊 Dashboard", "📈 Tendencias", "📆 Reporte mensual", "🧑‍💼 RRHH", "🏭 Métricas sector",
-        "👤 Rendimiento", "🔀 Comparar", "🔒 Evaluaciones",
-        "📢 Avisos", "📌 Asignar tareas", "🔄 Flujos", "👥 Colaboradores", "📋 Tareas",
-        "🎯 Metas", "⚙ Configuración", "📥 Exportar", "📜 Auditoría"
+        "📊 Dashboard", "📈 Tendencias", "📆 Mensual", "🧑‍💼 RRHH", "🏭 Métricas",
+        "👤 Rend.", "🔀 Comparar", "🔒 Eval.", "📢 Avisos", "📌 Asignar",
+        "🔄 Flujos", "👥 Equipo", "📋 Tareas", "🎯 Metas", "⚙ Config.",
+        "📥 Export.", "📜 Audit."
     ])
 
     # ── Dashboard ──
