@@ -195,6 +195,37 @@ def init_db():
                 mensaje TEXT NOT NULL,
                 creado_en TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS rrhh_conceptos (
+                id SERIAL PRIMARY KEY,
+                nombre TEXT UNIQUE NOT NULL,
+                activo INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS rrhh_registros (
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+                fecha TEXT NOT NULL,
+                concepto_id INTEGER NOT NULL REFERENCES rrhh_conceptos(id),
+                cantidad NUMERIC NOT NULL DEFAULT 1,
+                observacion TEXT DEFAULT '',
+                registrado_por INTEGER NOT NULL REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS metricas_config (
+                id SERIAL PRIMARY KEY,
+                nombre TEXT UNIQUE NOT NULL,
+                unidad TEXT DEFAULT '',
+                activo INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS metricas_registros (
+                id SERIAL PRIMARY KEY,
+                metrica_id INTEGER NOT NULL REFERENCES metricas_config(id),
+                fecha TEXT NOT NULL,
+                periodo TEXT NOT NULL DEFAULT 'mensual',
+                valor NUMERIC NOT NULL,
+                observacion TEXT DEFAULT '',
+                registrado_por INTEGER NOT NULL REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
         """)
         db.commit()
         # Config por defecto
@@ -819,8 +850,9 @@ def panel_admin():
     </div>
     """, unsafe_allow_html=True)
 
-    tab_dash, tab_tend, tab_repmens, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
-        "📊 Dashboard", "📈 Tendencias", "📆 Reporte mensual", "👤 Rendimiento", "🔀 Comparar", "🔒 Evaluaciones",
+    tab_dash, tab_tend, tab_repmens, tab_rrhh, tab_metrsec, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
+        "📊 Dashboard", "📈 Tendencias", "📆 Reporte mensual", "🧑‍💼 RRHH", "🏭 Métricas sector",
+        "👤 Rendimiento", "🔀 Comparar", "🔒 Evaluaciones",
         "📢 Avisos", "📌 Asignar tareas", "🔄 Flujos", "👥 Colaboradores", "📋 Tareas",
         "🎯 Metas", "⚙ Configuración", "📥 Exportar", "📜 Auditoría"
     ])
@@ -1314,6 +1346,302 @@ def panel_admin():
                     fig_et.update_traces(texttemplate='%{y}', textposition='outside')
                     fig_et.update_layout(height=400, xaxis_title="", yaxis_title="Total")
                     st.plotly_chart(fig_et, use_container_width=True)
+
+    # ── RRHH ──
+    with tab_rrhh:
+        st.markdown("#### 🧑‍💼 Recursos Humanos")
+
+        # Gestionar conceptos
+        with st.expander("⚙ Gestionar conceptos de RRHH"):
+            st.caption("Agregá los conceptos que vas a registrar (faltas, tardanzas, días de examen, etc.)")
+            with st.form("form_concepto_rrhh", clear_on_submit=True):
+                nuevo_concepto = st.text_input("Nuevo concepto", placeholder="Ej: Falta injustificada")
+                agregar_concepto = st.form_submit_button("Agregar concepto", type="primary")
+            if agregar_concepto and nuevo_concepto.strip():
+                try:
+                    with get_db() as db:
+                        db_execute(db, "INSERT INTO rrhh_conceptos (nombre) VALUES (%s)", (nuevo_concepto.strip(),))
+                        log_audit(db, user["id"], "rrhh_concepto", f"Nuevo: {nuevo_concepto}")
+                    st.success(f"✓ Concepto '{nuevo_concepto}' agregado.")
+                    st.rerun()
+                except Exception as e:
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        st.error("Ese concepto ya existe.")
+                    else:
+                        st.error(f"Error: {e}")
+
+            with get_db() as db:
+                conceptos_rrhh = db_execute(db, "SELECT id, nombre, activo FROM rrhh_conceptos ORDER BY nombre").fetchall()
+            if conceptos_rrhh:
+                for c in conceptos_rrhh:
+                    cc1, cc2 = st.columns([4, 1])
+                    cc1.write(f"{'✅' if c['activo'] else '❌'} {c['nombre']}")
+                    if c["activo"]:
+                        if cc2.button("Desactivar", key=f"rrhh_des_{c['id']}"):
+                            with get_db() as db:
+                                db_execute(db, "UPDATE rrhh_conceptos SET activo=0 WHERE id=%s", (c["id"],))
+                            st.rerun()
+                    else:
+                        if cc2.button("Activar", key=f"rrhh_act_{c['id']}"):
+                            with get_db() as db:
+                                db_execute(db, "UPDATE rrhh_conceptos SET activo=1 WHERE id=%s", (c["id"],))
+                            st.rerun()
+
+        # Registrar novedad
+        st.markdown("##### Registrar novedad")
+        with get_db() as db:
+            conceptos_activos = db_execute(db, "SELECT id, nombre FROM rrhh_conceptos WHERE activo=1 ORDER BY nombre").fetchall()
+            colabs_rrhh = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+
+        if not conceptos_activos:
+            st.warning("Primero agregá conceptos en ⚙ Gestionar conceptos de RRHH.")
+        elif not colabs_rrhh:
+            st.warning("No hay colaboradores cargados.")
+        else:
+            nombres_conceptos = {c["nombre"]: c["id"] for c in conceptos_activos}
+            nombres_colabs_rrhh = {c["nombre"]: c["id"] for c in colabs_rrhh}
+
+            with st.form("form_rrhh", clear_on_submit=True):
+                rh1, rh2, rh3 = st.columns(3)
+                with rh1:
+                    rrhh_colab = st.selectbox("Colaborador", list(nombres_colabs_rrhh.keys()), key="rrhh_colab")
+                with rh2:
+                    rrhh_concepto = st.selectbox("Concepto", list(nombres_conceptos.keys()), key="rrhh_concepto")
+                with rh3:
+                    rrhh_fecha = st.date_input("Fecha", value=date.today(), key="rrhh_fecha")
+                rh4, rh5 = st.columns(2)
+                with rh4:
+                    rrhh_cant = st.number_input("Cantidad", value=1, min_value=1, step=1, key="rrhh_cant")
+                with rh5:
+                    rrhh_obs = st.text_input("Observación (opcional)", key="rrhh_obs")
+                rrhh_enviar = st.form_submit_button("Registrar", type="primary")
+
+            if rrhh_enviar:
+                with get_db() as db:
+                    db_execute(db, """INSERT INTO rrhh_registros (usuario_id, fecha, concepto_id, cantidad, observacion, registrado_por)
+                                     VALUES (%s, %s, %s, %s, %s, %s)""",
+                               (nombres_colabs_rrhh[rrhh_colab], rrhh_fecha.isoformat(),
+                                nombres_conceptos[rrhh_concepto], rrhh_cant, rrhh_obs.strip(), user["id"]))
+                    log_audit(db, user["id"], "rrhh_registro", f"{rrhh_colab}: {rrhh_concepto}")
+                st.success("✓ Novedad registrada.")
+                st.rerun()
+
+        # Historial y reporte
+        st.divider()
+        st.markdown("##### Reporte de RRHH")
+        rr1, rr2, rr3 = st.columns(3)
+        with rr1:
+            rrhh_desde = st.date_input("Desde", value=date.today().replace(day=1), key="rrhh_desde")
+        with rr2:
+            rrhh_hasta = st.date_input("Hasta", value=date.today(), key="rrhh_hasta")
+        with rr3:
+            rrhh_filtro = st.selectbox("Colaborador", ["Todos"] + [c["nombre"] for c in colabs_rrhh], key="rrhh_filtro")
+
+        with get_db() as db:
+            if rrhh_filtro == "Todos":
+                df_rrhh = pd.read_sql_query("""
+                    SELECT u.nombre as colaborador, c.nombre as concepto, r.fecha, r.cantidad, r.observacion
+                    FROM rrhh_registros r
+                    JOIN usuarios u ON r.usuario_id = u.id
+                    JOIN rrhh_conceptos c ON r.concepto_id = c.id
+                    WHERE r.fecha BETWEEN %s AND %s
+                    ORDER BY r.fecha DESC
+                """, db, params=(rrhh_desde.isoformat(), rrhh_hasta.isoformat()))
+            else:
+                uid_rrhh = nombres_colabs_rrhh[rrhh_filtro]
+                df_rrhh = pd.read_sql_query("""
+                    SELECT u.nombre as colaborador, c.nombre as concepto, r.fecha, r.cantidad, r.observacion
+                    FROM rrhh_registros r
+                    JOIN usuarios u ON r.usuario_id = u.id
+                    JOIN rrhh_conceptos c ON r.concepto_id = c.id
+                    WHERE r.usuario_id = %s AND r.fecha BETWEEN %s AND %s
+                    ORDER BY r.fecha DESC
+                """, db, params=(uid_rrhh, rrhh_desde.isoformat(), rrhh_hasta.isoformat()))
+            if not df_rrhh.empty: df_rrhh = fix_df_types(df_rrhh)
+
+        if df_rrhh.empty:
+            st.info("No hay novedades en este período.")
+        else:
+            # Resumen por concepto
+            st.markdown("**Resumen por concepto**")
+            df_resumen = df_rrhh.groupby("concepto")["cantidad"].sum().reset_index().sort_values("cantidad", ascending=False)
+            for _, row in df_resumen.iterrows():
+                st.metric(row["concepto"], int(row["cantidad"]))
+
+            # Resumen por colaborador
+            if rrhh_filtro == "Todos":
+                st.markdown("**Por colaborador**")
+                df_por_colab = df_rrhh.groupby(["colaborador", "concepto"])["cantidad"].sum().reset_index()
+                COLORES_RH = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed"]
+                fig_rh = px.bar(df_por_colab, x="colaborador", y="cantidad", color="concepto",
+                                barmode="group", color_discrete_sequence=COLORES_RH)
+                fig_rh.update_traces(texttemplate='%{y}', textposition='outside')
+                fig_rh.update_layout(height=400, xaxis_title="", yaxis_title="Cantidad")
+                st.plotly_chart(fig_rh, use_container_width=True)
+
+            # Detalle
+            with st.expander("Ver detalle"):
+                st.dataframe(df_rrhh, use_container_width=True, hide_index=True)
+
+    # ── Métricas del sector ──
+    with tab_metrsec:
+        st.markdown("#### 🏭 Métricas del sector")
+
+        # Gestionar métricas
+        with st.expander("⚙ Gestionar indicadores"):
+            st.caption("Definí los indicadores que querés medir (expedientes iniciados, enviados, etc.)")
+            with st.form("form_metrica_config", clear_on_submit=True):
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    nueva_metrica = st.text_input("Nombre del indicador", placeholder="Ej: Expedientes iniciados")
+                with mc2:
+                    metrica_unidad = st.text_input("Unidad (opcional)", placeholder="Ej: expedientes, casos, etc.")
+                agregar_metrica = st.form_submit_button("Agregar indicador", type="primary")
+            if agregar_metrica and nueva_metrica.strip():
+                try:
+                    with get_db() as db:
+                        db_execute(db, "INSERT INTO metricas_config (nombre, unidad) VALUES (%s, %s)",
+                                   (nueva_metrica.strip(), metrica_unidad.strip()))
+                        log_audit(db, user["id"], "metrica_config", f"Nuevo: {nueva_metrica}")
+                    st.success(f"✓ Indicador '{nueva_metrica}' agregado.")
+                    st.rerun()
+                except Exception as e:
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        st.error("Ese indicador ya existe.")
+                    else:
+                        st.error(f"Error: {e}")
+
+            with get_db() as db:
+                metricas_cfg = db_execute(db, "SELECT id, nombre, unidad, activo FROM metricas_config ORDER BY nombre").fetchall()
+            if metricas_cfg:
+                for m in metricas_cfg:
+                    mc1, mc2 = st.columns([4, 1])
+                    unidad_txt = f" ({m['unidad']})" if m['unidad'] else ""
+                    mc1.write(f"{'✅' if m['activo'] else '❌'} {m['nombre']}{unidad_txt}")
+                    if m["activo"]:
+                        if mc2.button("Desactivar", key=f"met_des_{m['id']}"):
+                            with get_db() as db:
+                                db_execute(db, "UPDATE metricas_config SET activo=0 WHERE id=%s", (m["id"],))
+                            st.rerun()
+                    else:
+                        if mc2.button("Activar", key=f"met_act_{m['id']}"):
+                            with get_db() as db:
+                                db_execute(db, "UPDATE metricas_config SET activo=1 WHERE id=%s", (m["id"],))
+                            st.rerun()
+
+        # Cargar valores
+        st.markdown("##### Cargar datos")
+        with get_db() as db:
+            metricas_activas = db_execute(db, "SELECT id, nombre, unidad FROM metricas_config WHERE activo=1 ORDER BY nombre").fetchall()
+
+        if not metricas_activas:
+            st.warning("Primero agregá indicadores en ⚙ Gestionar indicadores.")
+        else:
+            nombres_metricas = {m["nombre"]: m["id"] for m in metricas_activas}
+
+            with st.form("form_metrica_valor", clear_on_submit=True):
+                mv1, mv2, mv3 = st.columns(3)
+                with mv1:
+                    met_sel = st.selectbox("Indicador", list(nombres_metricas.keys()), key="met_sel")
+                with mv2:
+                    met_fecha = st.date_input("Fecha", value=date.today(), key="met_fecha")
+                with mv3:
+                    met_periodo = st.selectbox("Período", ["diario", "semanal", "mensual"], key="met_periodo")
+                mv4, mv5 = st.columns(2)
+                with mv4:
+                    met_valor = st.number_input("Valor", min_value=0, step=1, key="met_valor")
+                with mv5:
+                    met_obs = st.text_input("Observación (opcional)", key="met_obs")
+                met_enviar = st.form_submit_button("Cargar dato", type="primary")
+
+            if met_enviar:
+                with get_db() as db:
+                    db_execute(db, """INSERT INTO metricas_registros (metrica_id, fecha, periodo, valor, observacion, registrado_por)
+                                     VALUES (%s, %s, %s, %s, %s, %s)""",
+                               (nombres_metricas[met_sel], met_fecha.isoformat(), met_periodo,
+                                met_valor, met_obs.strip(), user["id"]))
+                    log_audit(db, user["id"], "metrica_registro", f"{met_sel}: {met_valor}")
+                st.success("✓ Dato cargado.")
+                st.rerun()
+
+        # Reporte de métricas
+        st.divider()
+        st.markdown("##### Reporte de métricas del sector")
+        ms1, ms2 = st.columns(2)
+        with ms1:
+            met_desde = st.date_input("Desde", value=date.today().replace(day=1) - timedelta(days=180), key="met_desde")
+        with ms2:
+            met_hasta = st.date_input("Hasta", value=date.today(), key="met_hasta")
+
+        with get_db() as db:
+            df_met = pd.read_sql_query("""
+                SELECT mc.nombre as indicador, mc.unidad, mr.fecha, mr.periodo, mr.valor, mr.observacion
+                FROM metricas_registros mr
+                JOIN metricas_config mc ON mr.metrica_id = mc.id
+                WHERE mr.fecha BETWEEN %s AND %s
+                ORDER BY mr.fecha
+            """, db, params=(met_desde.isoformat(), met_hasta.isoformat()))
+            if not df_met.empty: df_met = fix_df_types(df_met)
+
+        if df_met.empty:
+            st.info("No hay datos cargados en este período.")
+        else:
+            indicadores = df_met["indicador"].unique()
+
+            # Métricas resumen
+            cols_met = st.columns(min(len(indicadores), 4))
+            for i, ind in enumerate(indicadores):
+                df_ind = df_met[df_met["indicador"] == ind]
+                total_ind = df_ind["valor"].sum()
+                cols_met[i % len(cols_met)].metric(ind, f"{int(total_ind):,}")
+
+            # Evolución por indicador
+            st.markdown("**Evolución**")
+            # Agrupar por mes
+            df_met["mes"] = df_met["fecha"].str[:7]
+            df_evol_met = df_met.groupby(["mes", "indicador"])["valor"].sum().reset_index()
+
+            COLORES_MET = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
+                           "#db2777", "#0891b2", "#65a30d"]
+            inds = df_evol_met["indicador"].unique().tolist()
+            cmap_met = {n: COLORES_MET[i % len(COLORES_MET)] for i, n in enumerate(inds)}
+
+            fig_met = px.line(df_evol_met, x="mes", y="valor", color="indicador",
+                              markers=True, color_discrete_map=cmap_met)
+            fig_met.update_traces(line=dict(width=3))
+            fig_met.update_layout(height=400, xaxis_title="Mes", yaxis_title="Valor",
+                                   legend_title="Indicador")
+            st.plotly_chart(fig_met, use_container_width=True)
+
+            # Comparativa mensual en barras
+            fig_met_bar = px.bar(df_evol_met, x="mes", y="valor", color="indicador",
+                                 barmode="group", color_discrete_map=cmap_met)
+            fig_met_bar.update_traces(texttemplate='%{y}', textposition='outside')
+            fig_met_bar.update_layout(height=400, xaxis_title="Mes", yaxis_title="Valor")
+            st.plotly_chart(fig_met_bar, use_container_width=True)
+
+            # Tabla detalle
+            with st.expander("Ver detalle de datos cargados"):
+                st.dataframe(df_met[["fecha", "indicador", "valor", "periodo", "observacion"]],
+                             use_container_width=True, hide_index=True)
+
+            # Editar/eliminar registros
+            with st.expander("✏️ Editar o eliminar registros"):
+                with get_db() as db:
+                    regs_met = db_execute(db, """
+                        SELECT mr.id, mc.nombre as indicador, mr.fecha, mr.valor, mr.periodo, mr.observacion
+                        FROM metricas_registros mr JOIN metricas_config mc ON mr.metrica_id = mc.id
+                        WHERE mr.fecha BETWEEN %s AND %s
+                        ORDER BY mr.fecha DESC
+                    """, (met_desde.isoformat(), met_hasta.isoformat())).fetchall()
+                for rm in regs_met:
+                    st.write(f"**{rm['fecha']}** — {rm['indicador']}: {rm['valor']} ({rm['periodo']})")
+                    if rm["observacion"]:
+                        st.caption(rm["observacion"])
+                    if st.button("🗑 Eliminar", key=f"met_del_{rm['id']}"):
+                        with get_db() as db:
+                            db_execute(db, "DELETE FROM metricas_registros WHERE id=%s", (rm["id"],))
+                        st.rerun()
 
     # ── Rendimiento individual ──
     with tab_rend:
