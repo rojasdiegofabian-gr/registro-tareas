@@ -850,15 +850,47 @@ def panel_admin():
     </div>
     """, unsafe_allow_html=True)
 
-    tab_dash, tab_tend, tab_repmens, tab_rrhh, tab_metrsec, tab_rend, tab_comp, tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs, tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
-        "📊 Dashboard", "📈 Tendencias", "📆 Mensual", "🧑‍💼 RRHH", "🏭 Métricas",
-        "👤 Rend.", "🔀 Comparar", "🔒 Eval.", "📢 Avisos", "📌 Asignar",
-        "🔄 Flujos", "👥 Equipo", "📋 Tareas", "🎯 Metas", "⚙ Config.",
-        "📥 Export.", "📜 Audit."
-    ])
+    # Menú de categorías
+    categoria = st.selectbox("Sección", [
+        "📊 Reportes y análisis",
+        "👥 Gestión del equipo",
+        "🏭 Sector y RRHH",
+        "⚙ Configuración y herramientas"
+    ], key="cat_admin", label_visibility="collapsed")
+
+    if categoria == "📊 Reportes y análisis":
+        tab_dash, tab_tend, tab_repmens, tab_rend, tab_comp = st.tabs([
+            "📊 Dashboard", "📈 Tendencias", "📆 Mensual", "👤 Rendimiento", "🔀 Comparar"
+        ])
+        # Crear variables vacías para las pestañas que no están en esta categoría
+        tab_rrhh = tab_metrsec = tab_eval = tab_avisos = tab_asignar = None
+        tab_flujos = tab_colabs = tab_tareas = tab_metas = tab_config = tab_export = tab_audit = None
+
+    elif categoria == "👥 Gestión del equipo":
+        tab_eval, tab_avisos, tab_asignar, tab_flujos, tab_colabs = st.tabs([
+            "🔒 Evaluaciones", "📢 Avisos", "📌 Asignar tareas", "🔄 Flujos", "👥 Colaboradores"
+        ])
+        tab_dash = tab_tend = tab_repmens = tab_rend = tab_comp = None
+        tab_rrhh = tab_metrsec = tab_tareas = tab_metas = tab_config = tab_export = tab_audit = None
+
+    elif categoria == "🏭 Sector y RRHH":
+        tab_rrhh, tab_metrsec = st.tabs([
+            "🧑‍💼 RRHH", "🏭 Métricas del sector"
+        ])
+        tab_dash = tab_tend = tab_repmens = tab_rend = tab_comp = None
+        tab_eval = tab_avisos = tab_asignar = tab_flujos = tab_colabs = None
+        tab_tareas = tab_metas = tab_config = tab_export = tab_audit = None
+
+    else:  # Configuración y herramientas
+        tab_tareas, tab_metas, tab_config, tab_export, tab_audit = st.tabs([
+            "📋 Tareas", "🎯 Metas", "⚙ Configuración", "📥 Exportar", "📜 Auditoría"
+        ])
+        tab_dash = tab_tend = tab_repmens = tab_rend = tab_comp = None
+        tab_rrhh = tab_metrsec = tab_eval = tab_avisos = tab_asignar = tab_flujos = tab_colabs = None
 
     # ── Dashboard ──
-    with tab_dash:
+    if tab_dash is not None:
+     with tab_dash:
         st.markdown("#### Resumen del día")
         hoy = date.today().isoformat()
 
@@ -959,7 +991,8 @@ def panel_admin():
             st.caption("Nadie dejó un mensaje hoy.")
 
     # ── Tendencias automáticas ──
-    with tab_tend:
+    if tab_tend is not None:
+     with tab_tend:
         st.markdown("#### 📈 Detección automática de tendencias")
         st.caption("Análisis de las últimas 2 semanas comparadas con las 2 semanas anteriores.")
 
@@ -1091,7 +1124,8 @@ def panel_admin():
                 st.plotly_chart(fig_tend, use_container_width=True)
 
     # ── Avisos / Cartelera ──
-    with tab_avisos:
+    if tab_avisos is not None:
+     with tab_avisos:
         st.markdown("#### 📢 Cartelera de avisos")
         st.caption("Los avisos activos se muestran a todos los colaboradores cuando entran.")
 
@@ -1155,7 +1189,8 @@ def panel_admin():
             st.caption("No hay mensajes para esta fecha.")
 
     # ── Reporte mensual del sector ──
-    with tab_repmens:
+    if tab_repmens is not None:
+     with tab_repmens:
         st.markdown("#### 📆 Reporte de productividad mensual")
         st.caption("Evolución mes a mes del sector completo.")
 
@@ -1348,7 +1383,8 @@ def panel_admin():
                     st.plotly_chart(fig_et, use_container_width=True)
 
     # ── RRHH ──
-    with tab_rrhh:
+    if tab_rrhh is not None:
+     with tab_rrhh:
         st.markdown("#### 🧑‍💼 Recursos Humanos")
 
         # Gestionar conceptos
@@ -1484,7 +1520,8 @@ def panel_admin():
                 st.dataframe(df_rrhh, use_container_width=True, hide_index=True)
 
     # ── Métricas del sector ──
-    with tab_metrsec:
+    if tab_metrsec is not None:
+     with tab_metrsec:
         st.markdown("#### 🏭 Métricas del sector")
 
         # Gestionar métricas
@@ -1644,7 +1681,8 @@ def panel_admin():
                         st.rerun()
 
     # ── Rendimiento individual ──
-    with tab_rend:
+    if tab_rend is not None:
+     with tab_rend:
         with get_db() as db:
             colabs = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
@@ -1793,7 +1831,8 @@ def panel_admin():
                                 st.rerun()
 
     # ── Comparar colaboradores ──
-    with tab_comp:
+    if tab_comp is not None:
+     with tab_comp:
         with get_db() as db:
             colabs = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
 
@@ -1886,7 +1925,8 @@ def panel_admin():
                             st.plotly_chart(fig_t, use_container_width=True)
 
     # ── Evaluaciones privadas ──
-    with tab_eval:
+    if tab_eval is not None:
+     with tab_eval:
         st.markdown("#### 🔒 Evaluaciones de desempeño (solo visible para administradores)")
 
         CATEGORIAS = ["Actitud", "Puntualidad", "Predisposición", "Trato con compañeros",
@@ -2012,7 +2052,8 @@ def panel_admin():
                             st.rerun()
 
     # ── Asignar tareas ──
-    with tab_asignar:
+    if tab_asignar is not None:
+     with tab_asignar:
         st.markdown("#### Asignar tarea a un colaborador")
         with get_db() as db:
             colabs_asig = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
@@ -2099,7 +2140,8 @@ def panel_admin():
                             st.rerun()
 
     # ── Flujos de trabajo ──
-    with tab_flujos:
+    if tab_flujos is not None:
+     with tab_flujos:
         st.markdown("#### 🔄 Tareas por pasos (flujos de trabajo)")
         st.caption("Creá tareas complejas que pasan de un colaborador a otro por etapas.")
 
@@ -2216,7 +2258,8 @@ def panel_admin():
                                 st.rerun()
 
     # ── Gestión de colaboradores ──
-    with tab_colabs:
+    if tab_colabs is not None:
+     with tab_colabs:
         st.markdown("#### Agregar colaborador")
         with st.form("form_colab", clear_on_submit=True):
             fc1, fc2 = st.columns(2)
@@ -2273,7 +2316,8 @@ def panel_admin():
                 st.info(f"Contraseña de '{c['nombre']}' reseteada a: **123456**")
 
     # ── Gestión de tareas ──
-    with tab_tareas:
+    if tab_tareas is not None:
+     with tab_tareas:
         st.markdown("#### Agregar tarea")
         with st.form("form_tarea", clear_on_submit=True):
             nombre_tarea = st.text_input("Nombre de la tarea")
@@ -2317,7 +2361,8 @@ def panel_admin():
                     st.rerun()
 
     # ── Metas ──
-    with tab_metas:
+    if tab_metas is not None:
+     with tab_metas:
         st.markdown("#### Definir meta por tarea")
         tareas = obtener_tareas_activas()
 
@@ -2368,7 +2413,8 @@ def panel_admin():
             st.info("No hay metas definidas.")
 
     # ── Configuración ──
-    with tab_config:
+    if tab_config is not None:
+     with tab_config:
         st.markdown("#### Parámetros generales")
 
         dias_actual = int(obtener_config("dias_editables") or 0)
@@ -2416,7 +2462,8 @@ def panel_admin():
                         st.success("✓ Contraseña actualizada.")
 
     # ── Exportar ──
-    with tab_export:
+    if tab_export is not None:
+     with tab_export:
         st.markdown("#### Exportar informes")
 
         ce1, ce2 = st.columns(2)
@@ -2752,7 +2799,8 @@ def panel_admin():
                 st.success("✓ Informe PDF generado.")
 
     # ── Auditoría ──
-    with tab_audit:
+    if tab_audit is not None:
+     with tab_audit:
         st.markdown("#### Log de actividad")
         with get_db() as db:
             logs = db_execute(db, """
