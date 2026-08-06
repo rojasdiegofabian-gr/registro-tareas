@@ -1680,6 +1680,65 @@ def panel_admin():
                             db_execute(db, "DELETE FROM metricas_registros WHERE id=%s", (rm["id"],))
                         st.rerun()
 
+            # ── Importar desde tareas de colaboradores ──
+            st.divider()
+            st.markdown("##### 📥 Importar desde tareas de colaboradores")
+            st.caption("Seleccioná registros de tus colaboradores y asignalos a un indicador del sector.")
+
+            if not metricas_activas:
+                st.warning("Primero creá indicadores en ⚙ Gestionar indicadores.")
+            else:
+                imp1, imp2, imp3 = st.columns(3)
+                with imp1:
+                    imp_colab_list = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall() if False else []
+                    with get_db() as db:
+                        imp_colab_list = db_execute(db, "SELECT id, nombre FROM usuarios WHERE rol='usuario' AND activo=1 ORDER BY nombre").fetchall()
+                    imp_colabs = {c["nombre"]: c["id"] for c in imp_colab_list}
+                    imp_colab = st.selectbox("Colaborador", ["Todos"] + list(imp_colabs.keys()), key="imp_colab")
+                with imp2:
+                    imp_fecha = st.date_input("Fecha", value=date.today(), key="imp_fecha")
+                with imp3:
+                    imp_metrica = st.selectbox("Asignar a indicador", list(nombres_metricas.keys()), key="imp_metrica")
+
+                # Buscar registros
+                with get_db() as db:
+                    if imp_colab == "Todos":
+                        regs_imp = db_execute(db, """
+                            SELECT r.id, u.nombre as colaborador, t.nombre as tarea, r.cantidad, r.fecha, r.turno
+                            FROM registros r
+                            JOIN usuarios u ON r.usuario_id = u.id
+                            JOIN tareas t ON r.tarea_id = t.id
+                            WHERE r.fecha = %s
+                            ORDER BY u.nombre, t.nombre
+                        """, (imp_fecha.isoformat(),)).fetchall()
+                    else:
+                        uid_imp = imp_colabs[imp_colab]
+                        regs_imp = db_execute(db, """
+                            SELECT r.id, u.nombre as colaborador, t.nombre as tarea, r.cantidad, r.fecha, r.turno
+                            FROM registros r
+                            JOIN usuarios u ON r.usuario_id = u.id
+                            JOIN tareas t ON r.tarea_id = t.id
+                            WHERE r.usuario_id = %s AND r.fecha = %s
+                            ORDER BY t.nombre
+                        """, (uid_imp, imp_fecha.isoformat())).fetchall()
+
+                if not regs_imp:
+                    st.info("No hay registros para esa fecha.")
+                else:
+                    for ri in regs_imp:
+                        col_info, col_btn = st.columns([4, 1])
+                        col_info.write(f"**{ri['colaborador']}** — {ri['tarea']}: **{ri['cantidad']}** ({ri['turno']})")
+                        if col_btn.button("📥 Importar", key=f"imp_{ri['id']}"):
+                            with get_db() as db:
+                                db_execute(db, """INSERT INTO metricas_registros (metrica_id, fecha, periodo, valor, observacion, registrado_por)
+                                                 VALUES (%s, %s, 'diario', %s, %s, %s)""",
+                                           (nombres_metricas[imp_metrica], ri["fecha"], ri["cantidad"],
+                                            f"Importado de {ri['colaborador']}: {ri['tarea']}", user["id"]))
+                                log_audit(db, user["id"], "metrica_importada",
+                                          f"{imp_metrica}: {ri['cantidad']} de {ri['colaborador']}")
+                            st.success(f"✓ {ri['cantidad']} importados a '{imp_metrica}'")
+                            st.rerun()
+
     # ── Rendimiento individual ──
     if tab_rend is not None:
      with tab_rend:
@@ -1775,6 +1834,11 @@ def panel_admin():
                     tareas_edit = obtener_tareas_activas()
                     lista_tareas_edit = list(tareas_edit.keys())
 
+                    # Cargar métricas del sector para importar
+                    with get_db() as db:
+                        metricas_imp = db_execute(db, "SELECT id, nombre FROM metricas_config WHERE activo=1 ORDER BY nombre").fetchall()
+                    metricas_imp_dict = {m["nombre"]: m["id"] for m in metricas_imp} if metricas_imp else {}
+
                     for reg in regs_edit:
                         with st.expander(f"**{reg['tarea']}** — Cantidad: {reg['cantidad']}  |  Turno: {reg['turno']}  |  {fmt_ts(reg['creado_en'])}"):
                             if reg["observacion"]:
@@ -1799,6 +1863,30 @@ def panel_admin():
                                     guardar = st.form_submit_button("💾 Guardar corrección")
                                 with col_eliminar:
                                     eliminar = st.form_submit_button("🗑 Eliminar registro")
+
+                            # Importar a métricas del sector
+                            if metricas_imp_dict:
+                                with st.form(f"imp_met_{reg['id']}"):
+                                    imp_col1, imp_col2 = st.columns([3, 1])
+                                    with imp_col1:
+                                        imp_concepto = st.selectbox("Importar a métrica del sector",
+                                                                     list(metricas_imp_dict.keys()),
+                                                                     key=f"imp_sel_{reg['id']}")
+                                    with imp_col2:
+                                        imp_btn = st.form_submit_button("📥 Importar")
+
+                                if imp_btn:
+                                    with get_db() as db:
+                                        db_execute(db, """INSERT INTO metricas_registros
+                                                         (metrica_id, fecha, periodo, valor, observacion, registrado_por)
+                                                         VALUES (%s, %s, 'diario', %s, %s, %s)""",
+                                                   (metricas_imp_dict[imp_concepto], reg["fecha"], reg["cantidad"],
+                                                    f"Importado de {sel}: {reg['tarea']} x{reg['cantidad']}",
+                                                    user["id"]))
+                                        log_audit(db, user["id"], "metrica_importada",
+                                                  f"{imp_concepto}: {reg['cantidad']} de {sel} ({reg['tarea']})")
+                                    st.success(f"✓ {reg['cantidad']} de '{reg['tarea']}' importados a '{imp_concepto}'")
+                                    st.rerun()
 
                             if guardar:
                                 obs_final = reg["observacion"] or ""
