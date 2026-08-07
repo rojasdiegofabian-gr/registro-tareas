@@ -1837,10 +1837,20 @@ def panel_admin():
                     # Cargar métricas del sector para importar
                     with get_db() as db:
                         metricas_imp = db_execute(db, "SELECT id, nombre FROM metricas_config WHERE activo=1 ORDER BY nombre").fetchall()
+                        # Obtener IDs de registros ya importados
+                        regs_ya_importados = set()
+                        rows_imp = db_execute(db, "SELECT observacion FROM metricas_registros WHERE observacion LIKE %s", ('%[REG#%',)).fetchall()
+                        for ri_row in rows_imp:
+                            import re as re_mod
+                            match = re_mod.search(r'\[REG#(\d+)\]', ri_row["observacion"] or "")
+                            if match:
+                                regs_ya_importados.add(int(match.group(1)))
                     metricas_imp_dict = {m["nombre"]: m["id"] for m in metricas_imp} if metricas_imp else {}
 
                     for reg in regs_edit:
-                        with st.expander(f"**{reg['tarea']}** — Cantidad: {reg['cantidad']}  |  Turno: {reg['turno']}  |  {fmt_ts(reg['creado_en'])}"):
+                        ya_importado = reg["id"] in regs_ya_importados
+                        icono_imp = " ✅ YA IMPORTADO" if ya_importado else ""
+                        with st.expander(f"**{reg['tarea']}** — Cantidad: {reg['cantidad']}  |  Turno: {reg['turno']}  |  {fmt_ts(reg['creado_en'])}{icono_imp}"):
                             if reg["observacion"]:
                                 st.caption(f"Observación del colaborador: {reg['observacion']}")
 
@@ -1866,27 +1876,30 @@ def panel_admin():
 
                             # Importar a métricas del sector
                             if metricas_imp_dict:
-                                with st.form(f"imp_met_{reg['id']}"):
-                                    imp_col1, imp_col2 = st.columns([3, 1])
-                                    with imp_col1:
-                                        imp_concepto = st.selectbox("Importar a métrica del sector",
-                                                                     list(metricas_imp_dict.keys()),
-                                                                     key=f"imp_sel_{reg['id']}")
-                                    with imp_col2:
-                                        imp_btn = st.form_submit_button("📥 Importar")
+                                if ya_importado:
+                                    st.success("✅ Este registro ya fue importado a métricas del sector.")
+                                else:
+                                    with st.form(f"imp_met_{reg['id']}"):
+                                        imp_col1, imp_col2 = st.columns([3, 1])
+                                        with imp_col1:
+                                            imp_concepto = st.selectbox("Importar a métrica del sector",
+                                                                         list(metricas_imp_dict.keys()),
+                                                                         key=f"imp_sel_{reg['id']}")
+                                        with imp_col2:
+                                            imp_btn = st.form_submit_button("📥 Importar")
 
-                                if imp_btn:
-                                    with get_db() as db:
-                                        db_execute(db, """INSERT INTO metricas_registros
-                                                         (metrica_id, fecha, periodo, valor, observacion, registrado_por)
-                                                         VALUES (%s, %s, 'diario', %s, %s, %s)""",
-                                                   (metricas_imp_dict[imp_concepto], reg["fecha"], reg["cantidad"],
-                                                    f"Importado de {sel}: {reg['tarea']} x{reg['cantidad']}",
-                                                    user["id"]))
-                                        log_audit(db, user["id"], "metrica_importada",
-                                                  f"{imp_concepto}: {reg['cantidad']} de {sel} ({reg['tarea']})")
-                                    st.success(f"✓ {reg['cantidad']} de '{reg['tarea']}' importados a '{imp_concepto}'")
-                                    st.rerun()
+                                    if imp_btn:
+                                        with get_db() as db:
+                                            db_execute(db, """INSERT INTO metricas_registros
+                                                             (metrica_id, fecha, periodo, valor, observacion, registrado_por)
+                                                             VALUES (%s, %s, 'diario', %s, %s, %s)""",
+                                                       (metricas_imp_dict[imp_concepto], reg["fecha"], reg["cantidad"],
+                                                        f"[REG#{reg['id']}] Importado de {sel}: {reg['tarea']} x{reg['cantidad']}",
+                                                        user["id"]))
+                                            log_audit(db, user["id"], "metrica_importada",
+                                                      f"{imp_concepto}: {reg['cantidad']} de {sel} ({reg['tarea']})")
+                                        st.success(f"✓ {reg['cantidad']} de '{reg['tarea']}' importados a '{imp_concepto}'")
+                                        st.rerun()
 
                             if guardar:
                                 obs_final = reg["observacion"] or ""
